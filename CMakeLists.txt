@@ -14,12 +14,14 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 ## System dependencies are found with CMake's conventions
-# find_package(Boost REQUIRED COMPONENTS system)
 
+set(osqp_DIR "/home/baihong/baihong_ws/osqp/build")
+set(OsqpEigen_DIR "/home/baihong/baihong_ws/osqp-eigen/build")
 find_package(Eigen3 REQUIRED)
 find_package(OsqpEigen REQUIRED)
 ## System dependencies are found with CMake's conventions
 find_package(Boost REQUIRED COMPONENTS system)
+
 ## Uncomment this if the package has a setup.py. This macro ensures
 ## modules and global scripts declared therein get installed
 ## See http://ros.org/doc/api/catkin/html/user_guide/setup_dot_py.html
@@ -109,7 +111,7 @@ catkin_package(
    INCLUDE_DIRS include
    LIBRARIES LearningMPC
    CATKIN_DEPENDS roscpp rospy
-   DEPENDS system_lib
+  # DEPENDS system_lib
 )
 
 ###########

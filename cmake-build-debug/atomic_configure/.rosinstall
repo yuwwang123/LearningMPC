@@ -1,0 +1,2 @@
+- setup-file:
+    local-name: /home/baihong/baihong_ws/src/LearningMPC/cmake-build-debug/devel/setup.sh

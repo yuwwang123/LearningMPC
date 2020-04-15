@@ -1,4 +1,4 @@
-
+//ros library
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <sensor_msgs/LaserScan.h>
@@ -9,27 +9,29 @@
 #include <ackermann_msgs/AckermannDriveStamped.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <tf/transform_listener.h>
-
-#include <math.h>
-#include <vector>
-#include <iostream>
-#include <string>
-#include <algorithm>
-#include <boost/algorithm/string.hpp>
-#include <random>
+#include <nav_msgs/Odometry.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 
-#include <nav_msgs/Odometry.h>
+//std library
+#include <cmath>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <stdexcept>
+#include <algorithm>
+#include <boost/algorithm/string.hpp>
+#include <random>
 
+//LMPC related and own header files
 #include <LearningMPC/track.h>
 #include <Eigen/Sparse>
 #include "OsqpEigen/OsqpEigen.h"
 #include <unsupported/Eigen/MatrixFunctions>
 #include <LearningMPC/car_params.h>
 
-const int nx = 6;
-const int nu = 2;
+const int nx = 6; //# of states
+const int nu = 2; //# of control inputs
 
 using namespace std;
 using namespace Eigen;
@@ -37,11 +39,12 @@ using namespace Eigen;
 struct Sample{
     Matrix<double,nx,1> x;
     Matrix<double,nu,1> u;
-    double s;
+    double s;                                                                                                           //time, second?
     int time;
     int iter;
     int cost;
 };
+
 enum rviz_id{
     CENTERLINE,
     CENTERLINE_POINTS,
@@ -55,10 +58,11 @@ enum rviz_id{
 
 class LMPC{
 public:
-    LMPC(ros::NodeHandle& nh);
+    LMPC(ros::NodeHandle& nh); //constructor
     void run();
 
 private:
+    // publishers, subscribers
     ros::NodeHandle nh_;
     ros::Publisher track_viz_pub_;
     ros::Publisher LMPC_viz_pub_;
@@ -69,27 +73,29 @@ private:
     ros::Subscriber rrt_sub_;
     ros::Subscriber map_sub_;
 
-    /*Paramaters*/
-    CarParams car;
+    /*Paramaters with values defined in "Lmpc_params.yaml"*/
+    CarParams car; //struct from car_params.h
     string pose_topic;
     string drive_topic;
     string wp_file_name;
+    string initial_safe_set_file_name;
     double WAYPOINT_SPACE;
-    double Ts;
+    double MAP_MARGIN;
 
-    int N;
-    int K_NEAR;
+    int N; //mpc horizon length, N timesteps ahead
+    double Ts; //time duration of every timestep
+    int K_NEAR; //# of nearest neighbors
     double SPEED_MAX;
     double STEER_MAX;
     double ACCELERATION_MAX;
     double DECELERATION_MAX;
-    double MAP_MARGIN;
     double VEL_THRESHOLD;
+
     // MPC params
     double q_s;
     double r_accel;
     double r_steer;
-    Matrix<double, nu, nu> R;
+    Matrix<double, nu, nu> R; //R matrix in objective function, coefficient of u: control inputs
 
     Track* track_;
     //odometry
@@ -149,6 +155,7 @@ private:
     Matrix<double,nx,1> get_nonlinear_dynamics(Matrix<double,nx,1>& x, Matrix<double,nu,1>& u,  double t);
 };
 
+//constructor, run once only
 LMPC::LMPC(ros::NodeHandle &nh): nh_(nh){
 
     getParameters(nh_);
@@ -183,13 +190,14 @@ LMPC::LMPC(ros::NodeHandle &nh): nh_(nh){
 
     iter_ = 2;
     use_dyn_ = false;
-    init_SS_from_data("/home/yuwei/yuwei_ws/src/LearningMPC/data/initial_safe_set.csv");
+    init_SS_from_data(initial_safe_set_file_name);
 }
 
 void LMPC::getParameters(ros::NodeHandle &nh) {
     nh.getParam("pose_topic", pose_topic);
     nh.getParam("drive_topic", drive_topic);
     nh.getParam("wp_file_name", wp_file_name);
+    nh.getParam("initial_safe_set_file_name", initial_safe_set_file_name);
     nh.getParam("N",N);
     nh.getParam("Ts",Ts);
     nh.getParam("K_NEAR", K_NEAR);
@@ -225,8 +233,10 @@ int compare_s(Sample& s1, Sample& s2){
 void LMPC::init_occupancy_grid(){
     boost::shared_ptr<nav_msgs::OccupancyGrid const> map_ptr;
     map_ptr = ros::topic::waitForMessage<nav_msgs::OccupancyGrid>("map", ros::Duration(5.0));
-    if (map_ptr == nullptr){ROS_INFO("No map received");}
-    else{
+
+    if (map_ptr == nullptr) {
+        ROS_INFO("No map received");
+    } else{
         map_ = *map_ptr;
         map_updated_ = map_;
         ROS_INFO("Map received");
@@ -272,7 +282,7 @@ void LMPC::init_SS_from_data(string data_file) {
 }
 
 void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg){
-    //visualize_centerline();
+    visualize_centerline();
     /** process pose info **/
     float x = odom_msg->pose.pose.position.x;
     float y = odom_msg->pose.pose.position.y;
