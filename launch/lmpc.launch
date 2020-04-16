@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Load all parameters -->
+  <rosparam command="load" file="$(find LearningMPC)/Lmpc_params.yaml"/>
+
+  <!-- Launch the learning MPC -->
+  <node pkg="LearningMPC" name="LMPC" type="LMPC" output="screen">
+  </node>
+
+</launch>
