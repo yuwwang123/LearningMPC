@@ -14,7 +14,7 @@
 #include <tf/transform_listener.h>
 
 // standard
-#include <math.h>
+#include <cmath>
 #include <vector>
 #include <array>
 #include <iostream>
@@ -33,13 +33,13 @@ const int SEARCH_RANGE = 10;
 const double HALF_WIDTH_MAX = 0.8;
 using namespace std;
 
-typedef struct Point_ref{
+struct Point_ref{
     double x;
     double y;
     double theta;  // theta represents progress along centerline_points
     double left_half_width;
     double right_half_width;
-}Point_ref;
+};
 
 class Track{
 public:
@@ -51,14 +51,14 @@ public:
     nav_msgs::OccupancyGrid map;
     vector<double> width_info;
 
-    Track(string file_name, nav_msgs::OccupancyGrid& map, bool sparse=false) : space(0.05), map(map){
+    Track(string wp_file_name, nav_msgs::OccupancyGrid& map, bool sparse=false) : space(0.05), map(map){
         space = 0.05;
         centerline_points.clear();
         vector<geometry_msgs::Point> waypoints;
-        CSVReader reader(file_name);
+
         // Get the data from CSV File
+        CSVReader reader(wp_file_name);
         std::vector<std::vector<std::string> > dataList = reader.getData();
-        // Print the content of row by row on screen
         for(std::vector<std::string> vec : dataList){
             geometry_msgs::Point wp;
             wp.x = std::stof(vec.at(0));
@@ -66,20 +66,21 @@ public:
             waypoints.push_back(wp);
         }
         /*** process raw waypoints data, extract equally spaced points ***/
-        int curr = 0;
-        int next =1;
+        int curr = 0; // current point
+        int next =1;  // next point
         Point_ref p_start;
-        p_start.x = waypoints.at(0).x; p_start.y = waypoints.at(0).y; p_start.theta = 0.0;
+        p_start.x = waypoints.at(0).x;
+        p_start.y = waypoints.at(0).y;
+        p_start.theta = 0.0;
         centerline_points.push_back(p_start);
         float theta = 0.0;
 
         while(next < waypoints.size()){
-            float dist = sqrt(pow(waypoints.at(next).x-waypoints.at(curr).x, 2)
-                    +pow(waypoints.at(next).y-waypoints.at(curr).y, 2));
-            float dist_to_start = sqrt(pow(waypoints.at(next).x-waypoints.at(0).x, 2)
-                                       +pow(waypoints.at(next).y-waypoints.at(0).y, 2));
-            if (dist>space){
-                theta += dist;
+
+            float dist_to_next_wp = (float)getEucliDist(waypoints.at(next).x, waypoints.at(next).y, waypoints.at(curr).x, waypoints.at(curr).y);
+            float dist_to_start = (float)getEucliDist(waypoints.at(next).x, waypoints.at(next).y, waypoints.at(0).x, waypoints.at(0).y);
+            if (dist_to_next_wp > space){
+                theta += dist_to_next_wp;
                 Point_ref p;
                 p.x = waypoints.at(next).x; p.y = waypoints.at(next).y; p.theta = theta;
                 p.left_half_width = p.right_half_width = HALF_WIDTH_MAX;
@@ -92,28 +93,23 @@ public:
                 break;
             }
         }
-        double last_space = sqrt(pow(centerline_points.back().x-waypoints.at(0).x, 2)
-                                 +pow(centerline_points.back().y-waypoints.at(0).y, 2));
-        length = theta + last_space;
-        Point_ref p_last, p_second_last;
-        p_last.x = waypoints.at(0).x; p_last.y = waypoints.at(0).y; p_last.theta = length;
+        double dist_from_last_cp_to_start = getEucliDist(centerline_points.back().x, centerline_points.back().y, waypoints.at(0).x, waypoints.at(0).y);
 
-        p_second_last.x = 0.5*(centerline_points.back().x + p_last.x);
-        p_second_last.y = 0.5*(centerline_points.back().y + p_last.y);
-        p_second_last.theta = length - 0.5*last_space;
+        length = theta + dist_from_last_cp_to_start;
+        Point_ref p_last;
+        p_last.x = waypoints.at(0).x;
+        p_last.y = waypoints.at(0).y;
+        p_last.theta = length;
 
-        if(last_space > space) {
-            centerline_points.push_back(p_second_last);
-        }
         centerline_points.push_back(p_last);   //close the loop
 
         vector<double> X;
         vector<double> Y;
         vector<double> thetas;
-        for (int i=0; i<centerline_points.size(); i++){
-            X.push_back(centerline_points.at(i).x);
-            Y.push_back(centerline_points.at(i).y);
-            thetas.push_back(centerline_points.at(i).theta);
+        for (const Point_ref & point : centerline_points) {
+            X.push_back(point.x);
+            Y.push_back(point.y);
+            thetas.push_back(point.theta);
         }
 
         X_spline.set_points(thetas, X);
@@ -139,15 +135,15 @@ public:
         using namespace Eigen;
         int t=0;
         Vector2d p_right, p_left;
-        for (int i=0; i<centerline_points.size(); i++){
-            double dx_dtheta = x_eval_d(centerline_points[i].theta);
-            double dy_dtheta = y_eval_d(centerline_points[i].theta);
-            Vector2d p(centerline_points[i].x, centerline_points[i].y);
+        for (Point_ref & point: centerline_points){
+            double dx_dtheta = x_eval_d(point.theta);
+            double dy_dtheta = y_eval_d(point.theta);
+            Vector2d p(point.x, point.y);
 
             //search right until hit right track boundary
             while(true){
-                double x = (p + t*map.info.resolution*Vector2d(dy_dtheta, -dx_dtheta).normalized())(0);
-                double y = (p + t*map.info.resolution*Vector2d(dy_dtheta, -dx_dtheta).normalized())(1);
+                float x = (p + (float)t * map.info.resolution * Vector2d(dy_dtheta, -dx_dtheta).normalized())(0);
+                float y = (p + (float)t * map.info.resolution * Vector2d(dy_dtheta, -dx_dtheta).normalized())(1);
                 if(occupancy_grid::is_xy_occupied(map, x, y)){
                     p_right(0) = x;
                     p_right(1) = y;
@@ -158,8 +154,8 @@ public:
             t=0;
             //search left until hit right track boundary
             while(true){
-                double x = (p + t*map.info.resolution*Vector2d(-dy_dtheta, dx_dtheta).normalized())(0);
-                double y = (p + t*map.info.resolution*Vector2d(-dy_dtheta, dx_dtheta).normalized())(1);
+                float x = (p + (float)t * map.info.resolution * Vector2d(-dy_dtheta, dx_dtheta).normalized())(0);
+                float y = (p + (float)t * map.info.resolution * Vector2d(-dy_dtheta, dx_dtheta).normalized())(1);
                 if(occupancy_grid::is_xy_occupied(map, x, y)){
                     p_left(0) = x;
                     p_left(1) = y;
@@ -167,88 +163,42 @@ public:
                 }
                 t++;
             }
-            centerline_points[i].left_half_width = (p_left-p).norm();
-            centerline_points[i].right_half_width = (p_right-p).norm();
+            point.left_half_width = (p_left-p).norm();
+            point.right_half_width = (p_right-p).norm();
         }
     }
 
-    double findTheta(double x, double y, double theta_guess, bool global_search= false){
+    static double getEucliDist(const double & p1x, const double & p1y, const double & p2x, const double & p2y) {
+        return sqrt(pow(p1x-p2x, 2)
+                    +pow(p1y-p2y, 2));
+    }
+
+//    double findTheta(double x, double y, double theta_guess, bool global_search= false) {
+    double findTheta(double x, double y) {
         /* return: projected theta along centerline_points, theta is between [0, length]
-         * */
-          //  wrapTheta(theta_guess);
-//            int start, end;
-//            if(global_search){
-//                start = 0;
-//                end = centerline_points.size();
-//            }
-//            else{
-//                int mid = int(floor(theta_guess/space));
-//                start = mid - SEARCH_RANGE;
-//                end = mid + SEARCH_RANGE;
-//            }
-//            int min_ind, second_min_ind;
-//            double min_dist2 = 10000000.0;
-//            for (int i=start; i<end; i++){
-//                if (i>centerline_points.size()-1){ i=0;}
-//                if (i<0){ i=centerline_points.size()-1;}
-//                double dist2 = pow(x-centerline_points.at(i).x, 2) + pow(y-centerline_points.at(i).y, 2);
-//                if( dist2 < min_dist2){
-//                    min_dist2 = dist2;
-//                    min_ind = i;
-//                }
-//            }
-//            if (sqrt(min_dist2)>HALF_WIDTH_MAX && !global_search){
-//                return findTheta(x, y, theta_guess, true);
-//            }
-//            Eigen::Vector2d p, p0, p1;
-//            int min_ind_prev = min_ind-1;
-//            int min_ind_next = min_ind+1;
-//            if (min_ind_next>centerline_points.size()-1){ min_ind_next -= centerline_points.size();}
-//            if (min_ind_prev<0){ min_ind_prev += centerline_points.size();}
-//
-//            //closest line segment: either [min_ind ,min_ind+1] or [min_ind,min_ind-1]
-//            if (pow(x-centerline_points.at(min_ind_next).x, 2) + pow(y-centerline_points.at(min_ind_next).y, 2) <
-//                    pow(x-centerline_points.at(min_ind_prev).x, 2) + pow(y-centerline_points.at(min_ind_prev).y, 2)){
-//                    second_min_ind = min_ind_next;
-//            }
-//            else{
-//                second_min_ind = min_ind_prev;
-//            }
-//
-//            p(0) = x;  p(1) = y;
-//            p0(0) = centerline_points.at(min_ind).x;  p0(1) = centerline_points.at(min_ind).y;
-//            p1(0) = centerline_points.at(second_min_ind).x;  p1(1) = centerline_points.at(second_min_ind).y;
-//
-//            double projection = abs((p - p0).dot(p1 - p0)/(p1 - p0).norm());
-//            double theta;
-//
-//            if (min_ind > second_min_ind){
-//                theta = centerline_points.at(min_ind).theta - projection;
-//            }
-//            else {
-//                if (min_ind == 0 && second_min_ind == centerline_points.size()-1) {
-//                    theta = length - projection;
-//                } else {
-//                    theta = centerline_points.at(min_ind).theta + projection;
-//                }
-//            }
-//            if (theta>length){ theta -= length;}
-//            if (theta<0){ theta += length;}
-            int min_ind;
-            double min_dist2 = 10000000.0;
-            for (int i=0; i<centerline_points.size(); i++){
-                double dist2 = pow(x-centerline_points.at(i).x, 2) + pow(y-centerline_points.at(i).y, 2);
-                if( dist2 < min_dist2){
-                    min_dist2 = dist2;
-                    min_ind = i;
-                }
+        * i.e. return the progress along centerline
+        * */
+        int min_ind = 0;
+        double min_dist = DBL_MAX;
+
+        for (size_t i = 0; i < centerline_points.size(); i++) {
+            double dist = getEucliDist(x, y, centerline_points.at(i).x, centerline_points.at(i).y);
+            if (dist < min_dist) {
+                min_dist = dist;
+                min_ind = i;
             }
-            return min_ind*space;
+        }
+
+        return min_ind * space;
     }
 
     void wrapTheta(double& theta){
-        while(theta > length){ theta -= length;}
-        while(theta < 0){theta += length; }
+        while (theta > length) {
+            theta -= length;
+        }
+        while (theta < 0) {
+            theta += length;
+        }
     }
 
     double x_eval(double theta){
@@ -281,7 +231,8 @@ public:
         return Y_spline.eval_dd(theta);
     }
 
-    double getPhi(double theta){
+    // given a progress 'theta', compute the tangent line angle 'Phi'
+    double getPhi(double theta) {
         wrapTheta(theta);
 
         double dx_dtheta = X_spline.eval_d(theta);
@@ -290,14 +241,15 @@ public:
         return atan2(dy_dtheta, dx_dtheta);
     }
 
-    double getLeftHalfWidth(double theta){
-       // wrapTheta(theta);
-        int ind = static_cast<int>(floor(theta/space));
+    double getLeftHalfWidth(const double & theta) {
+        // wrapTheta(theta);
+        int ind = static_cast<int>(floor(theta / space));
+        // clamp ind between 0 to centerline size to prevent segmentation fault
         ind = max(0, min(int(centerline_points.size()-1), ind));
         return centerline_points.at(ind).left_half_width;
     }
 
-    double getRightHalfWidth(double theta){
+    double getRightHalfWidth(const double & theta) {
         // wrapTheta(theta);
         int ind = static_cast<int>(floor(theta/space));
         ind = max(0, min(int(centerline_points.size()-1), ind));
@@ -314,7 +266,7 @@ public:
 
     double getcenterline_pointsCurvature(double theta){
         return (X_spline.eval_d(theta)*Y_spline.eval_dd(theta) - Y_spline.eval_d(theta)*X_spline.eval_dd(theta))/
-                pow((pow(X_spline.eval_d(theta),2) + pow(Y_spline.eval_d(theta),2)), 1.5);
+               pow((pow(X_spline.eval_d(theta),2) + pow(Y_spline.eval_d(theta),2)), 1.5);
     }
 
     double getcenterline_pointsRadius(double theta){

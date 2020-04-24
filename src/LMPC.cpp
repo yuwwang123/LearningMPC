@@ -37,10 +37,10 @@ using namespace std;
 using namespace Eigen;
 
 struct Sample{
-    Matrix<double,nx,1> x;
-    Matrix<double,nu,1> u;
-    double s;                                                                                                           //time, second?
-    int time;
+    Matrix<double,nx,1> x; // state
+    Matrix<double,nu,1> u; // control inputs
+    double s;              // corresponding progress 's' on the track
+    int time;              // timestep, not absolute time
     int iter;
     int cost;
 };
@@ -93,8 +93,8 @@ private:
 
     // MPC params
     double q_s;
-    double r_accel;
-    double r_steer;
+    double r_accel; // elements in R matrix
+    double r_steer; // elements in R matrix
     Matrix<double, nu, nu> R; //R matrix in objective function, coefficient of u: control inputs
 
     Track* track_;
@@ -112,7 +112,7 @@ private:
     bool use_dyn_;
 
     //Sample Safe set
-    vector<vector<Sample>> SS_;
+    vector<vector<Sample>> SS_; // each element is a set of Samples (trajectory) in one lap
     vector<Sample> curr_trajectory_;
     int iter_;
     int time_;
@@ -172,16 +172,20 @@ LMPC::LMPC(ros::NodeHandle &nh): nh_(nh){
     LMPC_viz_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("LMPC", 1);
     debugger_pub_ = nh_.advertise<visualization_msgs::Marker>("Debugger", 1);
 
+    //get odometry message and assign it to 'x' and 'y'
     nav_msgs::Odometry odom_msg;
     boost::shared_ptr<nav_msgs::Odometry const> odom_ptr;
     odom_ptr = ros::topic::waitForMessage<nav_msgs::Odometry>("odom", ros::Duration(5));
-    if (odom_ptr == nullptr){cout<< "fail to receive odom message!"<<endl;}
-    else{
+    if (odom_ptr == nullptr) {
+        cout<< "fail to receive odom message!"<<endl;
+    } else {
         odom_msg = *odom_ptr;
     }
-    float x = odom_msg.pose.pose.position.x;
-    float y = odom_msg.pose.pose.position.y;
-    s_prev_ = track_->findTheta(x, y,0,true);
+    double x = odom_msg.pose.pose.position.x;
+    double y = odom_msg.pose.pose.position.y;
+
+    // current state of the car
+    s_prev_ = track_->findTheta(x, y);
     car_pos_ = tf::Vector3(x, y, 0.0);
     yaw_ = tf::getYaw(odom_msg.pose.pose.orientation);
     vel_ = odom_msg.twist.twist.linear.x;
@@ -191,8 +195,10 @@ LMPC::LMPC(ros::NodeHandle &nh): nh_(nh){
     iter_ = 2;
     use_dyn_ = false;
     init_SS_from_data(initial_safe_set_file_name);
+
 }
 
+// load parameters from Lmpc_params.yaml
 void LMPC::getParameters(ros::NodeHandle &nh) {
     nh.getParam("pose_topic", pose_topic);
     nh.getParam("drive_topic", drive_topic);
@@ -230,6 +236,7 @@ int compare_s(Sample& s1, Sample& s2){
     return (s1.s< s2.s);
 }
 
+// get the map data from ros
 void LMPC::init_occupancy_grid(){
     boost::shared_ptr<nav_msgs::OccupancyGrid const> map_ptr;
     map_ptr = ros::topic::waitForMessage<nav_msgs::OccupancyGrid>("map", ros::Duration(5.0));
@@ -245,34 +252,36 @@ void LMPC::init_occupancy_grid(){
     occupancy_grid::inflate_map(map_, MAP_MARGIN);
 }
 
+
 void LMPC::init_SS_from_data(string data_file) {
-    CSVReader reader(data_file);
+
     // Get the data from CSV File
-    std::vector<std::vector<std::string>> dataList = reader.getData();
+    CSVReader reader(data_file);
+    vector<vector<string>> dataList = reader.getData();
     SS_.clear();
     // Print the content of row by row on screen
-    int time_prev=0;
-    int it =0;
-    vector<Sample> traj;
-    for(std::vector<std::string> vec : dataList){
+    int time_prev = 0;
+    int it = 0;
+    vector<Sample> traj; // the trajectory of one lap
+    for (const vector<string> & vec : dataList) {
         Sample sample;
-        sample.time = std::stof(vec.at(0));
-        // check if it's a new lap
+        sample.time = (int)std::stof(vec.at(0));
+        // check if it's a new lap, if is,
         if (sample.time - time_prev < 0) {
             it++;
             update_cost_to_go(traj);
             SS_.push_back(traj);
             traj.clear();
         }
-        sample.x(0) = std::stof(vec.at(1));
-        sample.x(1) = std::stof(vec.at(2));
-        sample.x(2) = std::stof(vec.at(3));
-        sample.x(3) = std::stof(vec.at(4));
-        sample.x(4) = 0;
-        sample.x(5) = 0;
+        sample.x(0) = std::stof(vec.at(1)); // x
+        sample.x(1) = std::stof(vec.at(2)); // y
+        sample.x(2) = std::stof(vec.at(3)); // yaw
+        sample.x(3) = std::stof(vec.at(4)); // velocity
+        sample.x(4) = 0; // yaw_dot
+        sample.x(5) = 0; // slip_angle
         sample.u(0) = std::stof(vec.at(5));
         sample.u(1) = std::stof(vec.at(6));
-        sample.s = std::stof(vec.at(7));
+        sample.s = std::stof(vec.at(7)); //progress
         sample.iter = it;
         traj.push_back(sample);
         time_prev = sample.time;
@@ -281,12 +290,12 @@ void LMPC::init_SS_from_data(string data_file) {
     SS_.push_back(traj);
 }
 
-void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg){
-    visualize_centerline();
+void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr & odom_msg) {
+    visualize_centerline(); // keep publishing centerline
     /** process pose info **/
-    float x = odom_msg->pose.pose.position.x;
-    float y = odom_msg->pose.pose.position.y;
-    s_curr_ = track_->findTheta(x, y,0,true);
+    double x = odom_msg->pose.pose.position.x;
+    double y = odom_msg->pose.pose.position.y;
+    s_curr_ = track_->findTheta(x, y);
     car_pos_ = tf::Vector3(x, y, 0.0);
     yaw_ = tf::getYaw(odom_msg->pose.pose.orientation);
     vel_ = sqrt(pow(odom_msg->twist.twist.linear.x,2) + pow(odom_msg->twist.twist.linear.y,2));
@@ -294,7 +303,8 @@ void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg){
     slip_angle_ = atan2(odom_msg->twist.twist.linear.y, odom_msg->twist.twist.linear.x);
 
     /** STATE MACHINE: check if dynamic model should be used based on current speed **/
-    if ((!use_dyn_) && (vel_ > VEL_THRESHOLD) && (iter_>3)){
+    // single track model is not applicable to low speed vehicle as from the dynamic model source
+    if ((!use_dyn_) && (vel_ > VEL_THRESHOLD) && (iter_ > 3)) {
         use_dyn_ = true;
     }
     if(use_dyn_ && (vel_< VEL_THRESHOLD*0.7)){
@@ -306,7 +316,7 @@ void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg){
     }
 }
 
-void LMPC::run(){
+void LMPC::run() {
     if (first_run_){
         // initialize QPSolution_ from initial Sample Safe Set (using the 2nd iteration)
         reset_QPSolution(1);
@@ -315,7 +325,7 @@ void LMPC::run(){
     /******** LMPC MAIN LOOP starts ********/
 
     /***check if it is new lap***/
-    if (s_curr_ - s_prev_ < -track_->length/2){
+    if (s_curr_ - s_prev_ < -track_->length / 2) {
         iter_++;
         update_cost_to_go(curr_trajectory_);
         //sort(curr_trajectory_.begin(), curr_trajectory_.end(), compare_s);
@@ -328,7 +338,7 @@ void LMPC::run(){
     /*** select terminal state candidate and its convex safe set ***/
     Matrix<double,nx,1> terminal_candidate = select_terminal_candidate();
     /** solve MPC and record current state***/
-    for (int i=0; i<1; i++){
+    for (int i = 0; i < 1; i++) {
         solve_MPC(terminal_candidate);
     }
     applyControl();
@@ -340,7 +350,8 @@ void LMPC::run(){
     first_run_ = false;
 }
 
-void LMPC::visualize_centerline(){
+// visualize centerline as blue lines
+void LMPC::visualize_centerline() {
     visualization_msgs::Marker spline_dots;
     spline_dots.header.stamp = ros::Time::now();
     spline_dots.header.frame_id = "map";
@@ -352,10 +363,11 @@ void LMPC::visualize_centerline(){
     spline_dots.action = visualization_msgs::Marker::ADD;
     spline_dots.pose.orientation.w = 1.0;
     spline_dots.color.b = 1.0;
-    spline_dots.color.a = 1.0;
+    spline_dots.color.a = 1.0; //alpha, not contributing to the actual color
     // spline_dots.lifetime = ros::Duration();
 
-    for (float t=0.0; t<track_->length; t+=0.05){
+    // from progress s, to get world coordinates x, y
+    for (float t = 0.0; t < track_->length; t += 0.05f) {
         geometry_msgs::Point p;
         p.x = track_->x_eval(t);
         p.y = track_->y_eval(t);
@@ -367,20 +379,23 @@ void LMPC::visualize_centerline(){
     track_viz_pub_.publish(markers);
 }
 
-int LMPC::reset_QPSolution(int iter){
-    QPSolution_ = VectorXd::Zero((N+1)*nx+ N*nu + nx*(N+1) + (2*K_NEAR+1));
-    for (int i=0; i<N+1; i++){
-        QPSolution_.segment<nx>(i*nx) = SS_[iter][i].x;
-        if (i<N) QPSolution_.segment<nu>((N+1)*nx + i*nu) = SS_[iter][i].u;
+int LMPC::reset_QPSolution(int iter) {
+    QPSolution_ = VectorXd::Zero((N+1)*nx+ N*nu + nx*(N+1) + (2*K_NEAR+1)); // size:(N+1)*nx+ N*nu + nx*(N+1) + (2*K_NEAR+1)
+    for (int i = 0; i < N+1; i++) {
+        QPSolution_.segment<nx>(i*nx) = SS_[iter][i].x; //starting from i*nx, last for nx length
+        if (i < N) {
+            QPSolution_.segment<nu>((N+1)*nx + i*nu) = SS_[iter][i].u; // assign values to each nu
+        }
     }
 }
 
+// equ 10 in the paper, select center points to construct convex sets for terminal states
 Matrix<double,nx,1> LMPC::select_terminal_candidate(){
     if (first_run_){
-        return SS_.back()[N].x;
+        return SS_.back()[N].x; // the j-1th trajectory, timestep N, get all states x
     }
     else{
-        return terminal_state_pred_;
+        return terminal_state_pred_; // take the terminal states from the last timestep, different from paper
     }
 }
 
@@ -395,8 +410,9 @@ void LMPC::add_point(){
     curr_trajectory_.push_back(point);
 }
 
-void LMPC::select_convex_safe_set(vector<Sample>& convex_safe_set, int iter_start, int iter_end, double s){
-    for (int it = iter_start; it<= iter_end; it++){
+// construct a convex safe set
+void LMPC::select_convex_safe_set (vector<Sample>& convex_safe_set, int iter_start, int iter_end, double s) {
+    for (int it = iter_start; it <= iter_end; it++) {
         int nearest_ind = find_nearest_point(SS_[it], s);
         int start_ind, end_ind;
         int lap_cost = SS_[it][0].cost;
@@ -404,27 +420,25 @@ void LMPC::select_convex_safe_set(vector<Sample>& convex_safe_set, int iter_star
         if (K_NEAR%2 != 0 ) {
             start_ind = nearest_ind - (K_NEAR-1)/2;
             end_ind = nearest_ind + (K_NEAR-1)/2;
-        }
-        else{
+        } else {
             start_ind = nearest_ind - K_NEAR/2 + 1;
             end_ind = nearest_ind + K_NEAR/2;
         }
 
         vector<Sample> curr_set;
-        if (end_ind > SS_[it].size()-1){ // front portion of set crossed finishing line
-            for (int ind=start_ind; ind<SS_[it].size(); ind++){
+        if (end_ind > SS_[it].size()-1) { // front portion of set crossed finishing line
+            for (size_t ind=start_ind; ind<SS_[it].size(); ind++){
                 curr_set.push_back(SS_[it][ind]);
                 // modify the cost-to-go for each point before finishing line
                 // to incentivize the car to cross finishing line towards a new lap
                 curr_set[curr_set.size()-1].cost += lap_cost;
             }
-            for (int ind=0; ind<end_ind-SS_[it].size()+1; ind ++){
+            for (size_t ind=0; ind<end_ind-SS_[it].size()+1; ind ++){
                 curr_set.push_back(SS_[it][ind]);
             }
             if (curr_set.size()!=K_NEAR) throw;  // for debug
-        }
-        else if (start_ind < 0){  //  set crossed finishing line
-            for (int ind=start_ind+SS_[it].size(); ind<SS_[it].size(); ind++){
+        } else if (start_ind < 0){  //  set crossed finishing line
+            for (size_t ind=start_ind+SS_[it].size(); ind<SS_[it].size(); ind++){
                 // modify the cost-to-go, same
                 curr_set.push_back(SS_[it][ind]);
                 curr_set[curr_set.size()-1].cost += lap_cost;
@@ -433,8 +447,7 @@ void LMPC::select_convex_safe_set(vector<Sample>& convex_safe_set, int iter_star
                 curr_set.push_back(SS_[it][ind]);
             }
             if (curr_set.size()!=K_NEAR) throw;  // for debug
-        }
-        else {  // no overlapping with finishing line
+        } else {  // no overlapping with finishing line
             for (int ind=start_ind; ind<=end_ind; ind++){
                 curr_set.push_back(SS_[it][ind]);
             }
@@ -443,21 +456,29 @@ void LMPC::select_convex_safe_set(vector<Sample>& convex_safe_set, int iter_star
     }
 }
 
-int LMPC::find_nearest_point(vector<Sample>& trajectory, double s){
+int LMPC::find_nearest_point(vector<Sample>& trajectory, double s) {
     // binary search to find closest point to a given s
-    int low = 0; int high = trajectory.size()-1;
-    while (low<=high){
-        int mid = (low + high)/2;
-        if (s == trajectory[mid].s) return mid;
-        if (s < trajectory[mid].s) high = mid-1;
-        else low = mid+1;
+    int low = 0;
+    int high = trajectory.size()-1;
+    while (low <= high) {
+        int mid = low + (high - low) / 2;
+        if (s == trajectory[mid].s) {
+            return mid;
+        }
+        if (s < trajectory[mid].s) {
+            high = mid-1;
+        } else {
+            low = mid+1;
+        }
     }
     return abs(trajectory[low].s-s) < (abs(trajectory[high].s-s))? low : high;
 }
 
-void LMPC::update_cost_to_go(vector<Sample>& trajectory){
-    trajectory[trajectory.size()-1].cost = 0;
-    for (int i=trajectory.size()-2; i>=0; i--){
+// each sample's cost-to-go equals its remaining timestep counts to the goal
+void LMPC::update_cost_to_go(vector<Sample>& trajectory) {
+    trajectory[trajectory.size() - 1].cost = 0; // terminal cost == 0
+
+    for (int i = trajectory.size() - 2; i >= 0; i--) {
         trajectory[i].cost = trajectory[i+1].cost + 1;
     }
 }
@@ -612,9 +633,9 @@ void wrap_angle(double& angle, const double angle_ref){
     while(angle - angle_ref < -M_PI) {angle += 2*M_PI;}
 }
 
-void LMPC::solve_MPC(const Matrix<double,nx,1>& terminal_candidate){
-    vector<Sample> terminal_CSS;
-    double s_t = track_->findTheta(terminal_candidate(0), terminal_candidate(1), 0, true);
+void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
+    vector<Sample> terminal_CSS; // declare a Convex Safety Set
+    double s_t = track_->findTheta(terminal_candidate(0), terminal_candidate(1)); //get progress of selected terminal candidate
     select_convex_safe_set(terminal_CSS, iter_-2, iter_-1, s_t);
 
     /** MPC variables: z = [x0, ..., xN, u0, ..., uN-1, s0, ..., sN, lambda0, ....., lambda(2*K_NEAR), s_t1, s_t2, s_t3, s_t4]*
@@ -653,7 +674,7 @@ void LMPC::solve_MPC(const Matrix<double,nx,1>& terminal_candidate){
 
         x_k_ref = QPSolution_.segment<nx>(i*nx);
         u_k_ref = QPSolution_.segment<nu>((N+1)*nx + i*nu);
-        double s_ref = track_->findTheta(x_k_ref(0), x_k_ref(1), 0, true);
+        double s_ref = track_->findTheta(x_k_ref(0), x_k_ref(1));
         get_linearized_dynamics(Ad, Bd, hd, x_k_ref, u_k_ref, use_dyn_);
         /* form Hessian entries*/
         // cost does not depend on x0, only 1 to N
