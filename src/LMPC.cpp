@@ -40,7 +40,7 @@ struct Sample{
     Matrix<double,nx,1> x; // state
     Matrix<double,nu,1> u; // control inputs
     double s;              // corresponding progress 's' on the track
-    int time;              // timestep, not absolute time
+    int timestep;              // timestep, not absolute time
     int iter;
     int cost;
 };
@@ -90,6 +90,8 @@ private:
     double ACCELERATION_MAX;
     double DECELERATION_MAX;
     double VEL_THRESHOLD;
+    int INITIAL_ITER;
+    int SAFETY_SET_ITERATIONS;
 
     // MPC params
     double q_s;
@@ -115,7 +117,7 @@ private:
     vector<vector<Sample>> SS_; // each element is a set of Samples (trajectory) in one lap
     vector<Sample> curr_trajectory_;
     int iter_;
-    int time_;
+    int timestep_;
     Matrix<double,nx,1> terminal_state_pred_;
 
     // map info
@@ -123,7 +125,7 @@ private:
     nav_msgs::OccupancyGrid map_updated_;
 
     VectorXd QPSolution_;
-    bool first_run_;
+    bool first_run_ = true;
     vector<geometry_msgs::Point> border_lines_;
 
 
@@ -192,7 +194,7 @@ LMPC::LMPC(ros::NodeHandle &nh): nh_(nh){
     yawdot_ = 0;
     slip_angle_ = 0;
 
-    iter_ = 2;
+    iter_ = INITIAL_ITER;
     use_dyn_ = false;
     init_SS_from_data(initial_safe_set_file_name);
 
@@ -212,6 +214,8 @@ void LMPC::getParameters(ros::NodeHandle &nh) {
     nh.getParam("SPEED_MAX", SPEED_MAX);
     nh.getParam("STEER_MAX", STEER_MAX);
     nh.getParam("VEL_THRESHOLD", VEL_THRESHOLD);
+    nh.getParam("INITIAL_ITER", INITIAL_ITER);
+    nh.getParam("SAFETY_SET_ITERATIONS", SAFETY_SET_ITERATIONS);
 
     nh.getParam("WAYPOINT_SPACE", WAYPOINT_SPACE);
     nh.getParam("r_accel",r_accel);
@@ -252,7 +256,7 @@ void LMPC::init_occupancy_grid(){
     occupancy_grid::inflate_map(map_, MAP_MARGIN);
 }
 
-
+// Initialize all member variables for struct 'Sample'
 void LMPC::init_SS_from_data(string data_file) {
 
     // Get the data from CSV File
@@ -260,31 +264,35 @@ void LMPC::init_SS_from_data(string data_file) {
     vector<vector<string>> dataList = reader.getData();
     SS_.clear();
     // Print the content of row by row on screen
-    int time_prev = 0;
-    int it = 0;
+    int timestep_prev = 0;
+    int iter = 0;
     vector<Sample> traj; // the trajectory of one lap
     for (const vector<string> & vec : dataList) {
         Sample sample;
-        sample.time = (int)std::stof(vec.at(0));
-        // check if it's a new lap, if is,
-        if (sample.time - time_prev < 0) {
-            it++;
-            update_cost_to_go(traj);
+        sample.timestep = (int)std::stof(vec.at(0));
+
+        // check if it's a new lap, if is, assign cost to go to this trajectory and put the traj into Safe Set
+        if (sample.timestep < timestep_prev) {
+            iter++;
+            update_cost_to_go(traj); // assign the # of  to sample.cost
             SS_.push_back(traj);
             traj.clear();
         }
+
         sample.x(0) = std::stof(vec.at(1)); // x
         sample.x(1) = std::stof(vec.at(2)); // y
         sample.x(2) = std::stof(vec.at(3)); // yaw
         sample.x(3) = std::stof(vec.at(4)); // velocity
         sample.x(4) = 0; // yaw_dot
         sample.x(5) = 0; // slip_angle
+
         sample.u(0) = std::stof(vec.at(5));
         sample.u(1) = std::stof(vec.at(6));
+
         sample.s = std::stof(vec.at(7)); //progress
-        sample.iter = it;
+        sample.iter = iter;
         traj.push_back(sample);
-        time_prev = sample.time;
+        timestep_prev = sample.timestep;
     }
     update_cost_to_go(traj);
     SS_.push_back(traj);
@@ -292,7 +300,7 @@ void LMPC::init_SS_from_data(string data_file) {
 
 void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr & odom_msg) {
     visualize_centerline(); // keep publishing centerline
-    /** process pose info **/
+    /** process pose info, assign values to state (x, y, yaw, velocity, yaw_dot, slip_angle, and s) **/
     double x = odom_msg->pose.pose.position.x;
     double y = odom_msg->pose.pose.position.y;
     s_curr_ = track_->findTheta(x, y);
@@ -304,12 +312,16 @@ void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr & odom_msg) {
 
     /** STATE MACHINE: check if dynamic model should be used based on current speed **/
     // single track model is not applicable to low speed vehicle as from the dynamic model source
-    if ((!use_dyn_) && (vel_ > VEL_THRESHOLD) && (iter_ > 3)) {
+    // thus, low speed, kinematic model; high speed, single track model;
+    if ((!use_dyn_) && (vel_ > VEL_THRESHOLD) && (iter_ > INITIAL_ITER)) {
         use_dyn_ = true;
     }
-    if(use_dyn_ && (vel_< VEL_THRESHOLD*0.7)){
+    if(use_dyn_ && (vel_< VEL_THRESHOLD * 0.7)) {
         use_dyn_ = false;
     }
+
+    // adjust penalty on acceleration and steering according to the speed
+    // when velocity gets high, more penalty on high acceleration and high steering angle
     if (vel_ > 4.5) {
         R(0,0) = 1.3 * r_accel;
         R(1,1) = 1.8 * r_steer;
@@ -325,28 +337,26 @@ void LMPC::run() {
     /******** LMPC MAIN LOOP starts ********/
 
     /***check if it is new lap***/
-    if (s_curr_ - s_prev_ < -track_->length / 2) {
+    if (s_curr_ < s_prev_ - track_->length / 2) {
         iter_++;
         update_cost_to_go(curr_trajectory_);
         //sort(curr_trajectory_.begin(), curr_trajectory_.end(), compare_s);
         SS_.push_back(curr_trajectory_);
         curr_trajectory_.clear();
      //   reset_QPSolution(iter_-1);
-        time_ = 0;
+        timestep_ = 0;
     }
 
     /*** select terminal state candidate and its convex safe set ***/
     Matrix<double,nx,1> terminal_candidate = select_terminal_candidate();
     /** solve MPC and record current state***/
-    for (int i = 0; i < 1; i++) {
-        solve_MPC(terminal_candidate);
-    }
+    solve_MPC(terminal_candidate);
     applyControl();
     add_point();
     /*** store info and advance to next time step***/
     terminal_state_pred_ = QPSolution_.segment<nx>(N*nx);
     s_prev_ = s_curr_;
-    time_++;
+    timestep_++;
     first_run_ = false;
 }
 
@@ -391,10 +401,9 @@ int LMPC::reset_QPSolution(int iter) {
 
 // equ 10 in the paper, select center points to construct convex sets for terminal states
 Matrix<double,nx,1> LMPC::select_terminal_candidate(){
-    if (first_run_){
+    if (first_run_) { // when timestep == 0
         return SS_.back()[N].x; // the j-1th trajectory, timestep N, get all states x
-    }
-    else{
+    } else { // when timestep != 0
         return terminal_state_pred_; // take the terminal states from the last timestep, different from paper
     }
 }
@@ -405,49 +414,43 @@ void LMPC::add_point(){
 
     point.s = s_curr_;
     point.iter = iter_;
-    point.time = time_;
+    point.timestep = timestep_;
     point.u = QPSolution_.segment<nu>((N+1)*nx);
     curr_trajectory_.push_back(point);
 }
 
-// construct a convex safe set
+// construct a convex safe set from K_NEAR points from each iteration
+// i.e. D_l^j(x) from paper
 void LMPC::select_convex_safe_set (vector<Sample>& convex_safe_set, int iter_start, int iter_end, double s) {
     for (int it = iter_start; it <= iter_end; it++) {
         int nearest_ind = find_nearest_point(SS_[it], s);
-        int start_ind, end_ind;
-        int lap_cost = SS_[it][0].cost;
+        int lap_cost = SS_[it][0].cost; //cost of the whole lap
 
-        if (K_NEAR%2 != 0 ) {
-            start_ind = nearest_ind - (K_NEAR-1)/2;
-            end_ind = nearest_ind + (K_NEAR-1)/2;
-        } else {
-            start_ind = nearest_ind - K_NEAR/2 + 1;
-            end_ind = nearest_ind + K_NEAR/2;
-        }
+        int start_ind = nearest_ind - K_NEAR / 2; // start of a K_NEAR range
+        int end_ind = start_ind + K_NEAR - 1;
 
         vector<Sample> curr_set;
-        if (end_ind > SS_[it].size()-1) { // front portion of set crossed finishing line
-            for (size_t ind=start_ind; ind<SS_[it].size(); ind++){
-                curr_set.push_back(SS_[it][ind]);
-                // modify the cost-to-go for each point before finishing line
-                // to incentivize the car to cross finishing line towards a new lap
-                curr_set[curr_set.size()-1].cost += lap_cost;
+        if (end_ind > SS_[it].size()-1 || start_ind < 0) { // nearest_ind is around finishing line
+            if (end_ind > SS_[it].size()-1) { //nearest_ind has not crossed finishing line yet, but front portion of set crossed
+                //do nothing
+            } else if (start_ind < 0) { //nearest_ind crossed finishing line, back portion of the set behind finishing line
+                start_ind += SS_[it].size();
+                end_ind += SS_[it].size();
             }
-            for (size_t ind=0; ind<end_ind-SS_[it].size()+1; ind ++){
-                curr_set.push_back(SS_[it][ind]);
+            for (size_t ind = start_ind; ind <= end_ind; ind++) {
+                if (ind < SS_[it].size()) {
+                    curr_set.push_back(SS_[it][ind]);
+                    // modify the cost-to-go for each point before finishing line
+                    // to incentivize the car to cross finishing line towards a new lap
+                    // i.e. the points behind finishing line have larger cost (+lap_cost), so the new point tends to be
+                    // landed in further regions which is with lower cost
+                    curr_set[curr_set.size()-1].cost += lap_cost;
+                } else {
+                    curr_set.push_back(SS_[it][ind - SS_[it].size()]);
+                }
             }
             if (curr_set.size()!=K_NEAR) throw;  // for debug
-        } else if (start_ind < 0){  //  set crossed finishing line
-            for (size_t ind=start_ind+SS_[it].size(); ind<SS_[it].size(); ind++){
-                // modify the cost-to-go, same
-                curr_set.push_back(SS_[it][ind]);
-                curr_set[curr_set.size()-1].cost += lap_cost;
-            }
-            for (int ind=0; ind<end_ind+1; ind ++){
-                curr_set.push_back(SS_[it][ind]);
-            }
-            if (curr_set.size()!=K_NEAR) throw;  // for debug
-        } else {  // no overlapping with finishing line
+        } else {// no overlapping with finishing line
             for (int ind=start_ind; ind<=end_ind; ind++){
                 curr_set.push_back(SS_[it][ind]);
             }
@@ -457,15 +460,14 @@ void LMPC::select_convex_safe_set (vector<Sample>& convex_safe_set, int iter_sta
 }
 
 int LMPC::find_nearest_point(vector<Sample>& trajectory, double s) {
-    // binary search to find closest point to a given s
+    // binary search to find closest point to a given s in the 'trajectory'
     int low = 0;
     int high = trajectory.size()-1;
     while (low <= high) {
         int mid = low + (high - low) / 2;
         if (s == trajectory[mid].s) {
             return mid;
-        }
-        if (s < trajectory[mid].s) {
+        } else if (s < trajectory[mid].s) {
             high = mid-1;
         } else {
             low = mid+1;
@@ -474,7 +476,7 @@ int LMPC::find_nearest_point(vector<Sample>& trajectory, double s) {
     return abs(trajectory[low].s-s) < (abs(trajectory[high].s-s))? low : high;
 }
 
-// each sample's cost-to-go equals its remaining timestep counts to the goal
+// each sample's cost-to-go (J) equals its remaining timestep counts to the goal, i.e. time
 void LMPC::update_cost_to_go(vector<Sample>& trajectory) {
     trajectory[trajectory.size() - 1].cost = 0; // terminal cost == 0
 
@@ -634,9 +636,9 @@ void wrap_angle(double& angle, const double angle_ref){
 }
 
 void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
-    vector<Sample> terminal_CSS; // declare a Convex Safety Set
-    double s_t = track_->findTheta(terminal_candidate(0), terminal_candidate(1)); //get progress of selected terminal candidate
-    select_convex_safe_set(terminal_CSS, iter_-2, iter_-1, s_t);
+    vector<Sample> terminal_CSS; // declare a Convex Safety Set (CSS)
+    double s_terminal = track_->findTheta(terminal_candidate(0), terminal_candidate(1)); //get progress of selected terminal candidate by providing (x, y)
+    select_convex_safe_set(terminal_CSS, iter_ - SAFETY_SET_ITERATIONS, iter_ - 1, s_terminal);
 
     /** MPC variables: z = [x0, ..., xN, u0, ..., uN-1, s0, ..., sN, lambda0, ....., lambda(2*K_NEAR), s_t1, s_t2, s_t3, s_t4]*
      *  constraints: dynamics, track bounds, input limits, acceleration limit, slack, lambdas, terminal state, sum of lambda's*/
@@ -783,8 +785,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     }
     numOfConstraintsSoFar += 2*K_NEAR;
 
-    // terminal state constraints:  -s_t <= -x_N+1 + linear_combination(lambda's) <= s_t
-    // 0 <= s_t -x_N+1 + linear_combination(lambda's) <= inf
+    // terminal state constraints:  -s_terminal <= -x_N+1 + linear_combination(lambda's) <= s_terminal
+    // 0 <= s_terminal -x_N+1 + linear_combination(lambda's) <= inf
     for (int i=0; i<2*K_NEAR; i++){
         for (int state_ind=0; state_ind<nx; state_ind++){
             constraintMatrix.insert(numOfConstraintsSoFar + state_ind, (N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].x(state_ind);
@@ -798,7 +800,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     }
     numOfConstraintsSoFar += nx;
 
-    //-inf <= -x_N+1 + linear_combination(lambda's) - s_t <= 0
+    //-inf <= -x_N+1 + linear_combination(lambda's) - s_terminal <= 0
     for (int i=0; i<2*K_NEAR; i++){
         for (int state_ind=0; state_ind<nx; state_ind++){
             constraintMatrix.insert(numOfConstraintsSoFar + state_ind, (N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].x(state_ind);
