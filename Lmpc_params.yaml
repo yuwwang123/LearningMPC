@@ -14,7 +14,7 @@ ACCELERATION_MAX: 4.0
 DECELERATION_MAX: 5.0
 VEL_THRESHOLD: 1.3
 INITIAL_ITER: 2
-SAFETY_SET_ITERATIONS: 2 # iterations to be considered as safety set
+SAFETY_SET_ITERS: 2 # iterations to be considered as safety set
 
 # MPC params
 r_accel : 1.5

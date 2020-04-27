@@ -91,7 +91,7 @@ private:
     double DECELERATION_MAX;
     double VEL_THRESHOLD;
     int INITIAL_ITER;
-    int SAFETY_SET_ITERATIONS;
+    int SAFETY_SET_ITERS;
 
     // MPC params
     double q_s;
@@ -131,7 +131,7 @@ private:
 
     void getParameters(ros::NodeHandle& nh);
     void init_occupancy_grid();
-    void init_SS_from_data(const string data_file);
+    void init_SS_from_data(string data_file);
     void visualize_centerline();
     int reset_QPSolution(int iter);
     void odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg);
@@ -215,7 +215,7 @@ void LMPC::getParameters(ros::NodeHandle &nh) {
     nh.getParam("STEER_MAX", STEER_MAX);
     nh.getParam("VEL_THRESHOLD", VEL_THRESHOLD);
     nh.getParam("INITIAL_ITER", INITIAL_ITER);
-    nh.getParam("SAFETY_SET_ITERATIONS", SAFETY_SET_ITERATIONS);
+    nh.getParam("SAFETY_SET_ITERS", SAFETY_SET_ITERS);
 
     nh.getParam("WAYPOINT_SPACE", WAYPOINT_SPACE);
     nh.getParam("r_accel",r_accel);
@@ -253,7 +253,7 @@ void LMPC::init_occupancy_grid(){
         ROS_INFO("Map received");
     }
     ROS_INFO("Initializing occupancy grid for map ...");
-    occupancy_grid::inflate_map(map_, MAP_MARGIN);
+    occupancy_grid::inflate_map(map_, (float)MAP_MARGIN);
 }
 
 // Initialize all member variables for struct 'Sample'
@@ -390,7 +390,8 @@ void LMPC::visualize_centerline() {
 }
 
 int LMPC::reset_QPSolution(int iter) {
-    QPSolution_ = VectorXd::Zero((N+1)*nx+ N*nu + nx*(N+1) + (2*K_NEAR+1)); // size:(N+1)*nx+ N*nu + nx*(N+1) + (2*K_NEAR+1)
+    QPSolution_ = VectorXd::Zero((N+1)*nx+ N*nu + nx*(N+1) + (SAFETY_SET_ITERS * K_NEAR + 1)); // size:(N+1)*nx+ N*nu + nx*(N+1) + (SAFETY_SET_ITERS * K_NEAR + 1)
+    // the extra 1 is itself?
     for (int i = 0; i < N+1; i++) {
         QPSolution_.segment<nx>(i*nx) = SS_[iter][i].x; //starting from i*nx, last for nx length
         if (i < N) {
@@ -437,6 +438,7 @@ void LMPC::select_convex_safe_set (vector<Sample>& convex_safe_set, int iter_sta
                 start_ind += SS_[it].size();
                 end_ind += SS_[it].size();
             }
+
             for (size_t ind = start_ind; ind <= end_ind; ind++) {
                 if (ind < SS_[it].size()) {
                     curr_set.push_back(SS_[it][ind]);
@@ -449,8 +451,11 @@ void LMPC::select_convex_safe_set (vector<Sample>& convex_safe_set, int iter_sta
                     curr_set.push_back(SS_[it][ind - SS_[it].size()]);
                 }
             }
+
             if (curr_set.size()!=K_NEAR) throw;  // for debug
+
         } else {// no overlapping with finishing line
+
             for (int ind=start_ind; ind<=end_ind; ind++){
                 curr_set.push_back(SS_[it][ind]);
             }
@@ -462,7 +467,7 @@ void LMPC::select_convex_safe_set (vector<Sample>& convex_safe_set, int iter_sta
 int LMPC::find_nearest_point(vector<Sample>& trajectory, double s) {
     // binary search to find closest point to a given s in the 'trajectory'
     int low = 0;
-    int high = trajectory.size()-1;
+    int high = (int)trajectory.size()-1;
     while (low <= high) {
         int mid = low + (high - low) / 2;
         if (s == trajectory[mid].s) {
@@ -509,34 +514,38 @@ Vector3d LMPC::track_to_global(double e_y, double e_yaw, double s){
 }
 
 void LMPC::get_linearized_dynamics(Matrix<double,nx,nx>& Ad, Matrix<double,nx, nu>& Bd, Matrix<double,nx,1>& hd,
-        Matrix<double,nx,1>& x_op, Matrix<double,nu,1>& u_op, bool use_dyn){
+        Matrix<double,nx,1>& x_op, Matrix<double,nu,1>& u_op, bool use_dyn) {
 
     double yaw = x_op(2);
     double v = x_op(3);
-    double accel = u_op(0);
-    double steer = u_op(1);
     double yaw_dot = x_op(4);
     double slip_angle = x_op(5);
 
-    VectorXd dynamics(6), h(6);
+    double accel = u_op(0);
+    double steer = u_op(1);
+
+
+    VectorXd states_dot(6), h(6);
     Matrix<double, nx, nx> A, M12;
     Matrix<double, nx, nu> B;
 
+    // linearization, using first-order Taylor approximation
+    // state_dot = A*state + B*control
     if (!use_dyn) {
         // Kinematic Model
-        dynamics(0) = v * cos(yaw);
-        dynamics(1) = v * sin(yaw);
-        dynamics(2) = v * tan(steer)/car.wheelbase;
-        dynamics(3) = accel;
-        dynamics(4) = 0;
-        dynamics(5) = 0;
+        states_dot(0) = v * cos(yaw);
+        states_dot(1) = v * sin(yaw);
+        states_dot(2) = v * tan(steer)/car.wheelbase;
+        states_dot(3) = accel;
+        states_dot(4) = 0;
+        states_dot(5) = 0;
 
-        A <<    0.0, 0.0, -v*sin(yaw),  cos(yaw),       0.0,  0.0,
-                0.0, 0.0,  v*cos(yaw),  sin(yaw),       0.0,  0.0,
-                0.0, 0.0,         0.0,   tan(steer)/car.wheelbase,     0.0,  0.0,
-                0.0, 0.0,         0.0,       0.0,       0.0,  0.0,
-                0.0, 0.0,         0.0,       0.0,       0.0,  0.0,
-                0.0, 0.0,         0.0,       0.0,       0.0,  0.0;
+        A <<    0.0, 0.0, -v*sin(yaw),  cos(yaw),                   0.0,  0.0,
+                0.0, 0.0,  v*cos(yaw),  sin(yaw),                   0.0,  0.0,
+                0.0, 0.0,         0.0,  tan(steer)/car.wheelbase,   0.0,  0.0,
+                0.0, 0.0,         0.0,       0.0,                   0.0,  0.0,
+                0.0, 0.0,         0.0,       0.0,                   0.0,  0.0,
+                0.0, 0.0,         0.0,       0.0,                   0.0,  0.0;
 
         B <<    0.0, 0.0,
                 0.0, 0.0,
@@ -552,15 +561,15 @@ void LMPC::get_linearized_dynamics(Matrix<double,nx,nx>& Ad, Matrix<double,nx, n
         double rear_val = g * car.l_r - accel * car.h_cg;
         double front_val = g * car.l_f + accel * car.h_cg;
 
-        dynamics(0) = v * cos(yaw+slip_angle);
-        dynamics(1) = v * sin(yaw+slip_angle);
-        dynamics(2) = yaw_dot;
-        dynamics(3) = accel;
-        dynamics(4) = (car.friction_coeff * car.mass / (car.I_z * car.wheelbase)) *
+        states_dot(0) = v * cos(yaw+slip_angle);
+        states_dot(1) = v * sin(yaw+slip_angle);
+        states_dot(2) = yaw_dot;
+        states_dot(3) = accel;
+        states_dot(4) = (car.friction_coeff * car.mass / (car.I_z * car.wheelbase)) *
                       (car.l_f * car.cs_f * steer * (rear_val) +
                        slip_angle * (car.l_r * car.cs_r * (front_val) - car.l_f * car.cs_f * (rear_val)) -
                        (yaw_dot/v) * (pow(car.l_f, 2) * car.cs_f * (rear_val) + pow(car.l_r, 2) * car.cs_r * (front_val)));        // yaw_dot dynamics
-        dynamics(5) = (car.friction_coeff / (v * (car.l_r + car.l_f))) *
+        states_dot(5) = (car.friction_coeff / (v * (car.l_r + car.l_f))) *
                       (car.cs_f * steer * rear_val - slip_angle * (car.cs_r * front_val + car.cs_f * rear_val) +
                               (yaw_dot/v) * (car.cs_r * car.l_r * front_val - car.cs_f * car.l_f * rear_val)) - yaw_dot;        // slip_angle dynamics
 
@@ -622,7 +631,7 @@ void LMPC::get_linearized_dynamics(Matrix<double,nx,nx>& Ad, Matrix<double,nx, n
     aux.block<nx,nx>(0, nx) << Matrix<double,nx,nx>::Identity();
     M = (aux*Ts).exp();
     M12 = M.block<nx,nx>(0,nx);
-    h = dynamics - (A*x_op + B*u_op);
+    h = states_dot - (A*x_op + B*u_op);
 
     Ad = (A*Ts).exp();
     Bd = M12*B;
@@ -630,18 +639,24 @@ void LMPC::get_linearized_dynamics(Matrix<double,nx,nx>& Ad, Matrix<double,nx, n
 
 }
 
-void wrap_angle(double& angle, const double angle_ref){
-    while(angle - angle_ref > M_PI) {angle -= 2*M_PI;}
-    while(angle - angle_ref < -M_PI) {angle += 2*M_PI;}
+void wrap_angle(double & angle, const double & angle_ref) {
+    while(angle - angle_ref > M_PI) {
+        angle -= 2*M_PI;
+    }
+    while(angle - angle_ref < -M_PI) {
+        angle += 2*M_PI;
+    }
 }
 
 void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     vector<Sample> terminal_CSS; // declare a Convex Safety Set (CSS)
     double s_terminal = track_->findTheta(terminal_candidate(0), terminal_candidate(1)); //get progress of selected terminal candidate by providing (x, y)
-    select_convex_safe_set(terminal_CSS, iter_ - SAFETY_SET_ITERATIONS, iter_ - 1, s_terminal);
+    select_convex_safe_set(terminal_CSS, iter_ - SAFETY_SET_ITERS, iter_ - 1, s_terminal);
 
-    /** MPC variables: z = [x0, ..., xN, u0, ..., uN-1, s0, ..., sN, lambda0, ....., lambda(2*K_NEAR), s_t1, s_t2, s_t3, s_t4]*
+    /** MPC variables: z = [x0, ..., xN, u0, ..., uN-1, s0, ..., sN, lambda0, ....., lambda(SAFETY_SET_ITERS * K_NEAR), s_t1, s_t2, s_t3, s_t4, s_t5, s_t6]*
      *  constraints: dynamics, track bounds, input limits, acceleration limit, slack, lambdas, terminal state, sum of lambda's*/
+    // nx: terminal state soft constraint
+    //
     SparseMatrix<double> HessianMatrix((N+1)*nx+ N*nu + (N+1) + (2*K_NEAR) +nx, (N+1)*nx+ N*nu + (N+1)+ (2*K_NEAR) +nx);
     SparseMatrix<double> constraintMatrix((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + (2*K_NEAR) + 2*nx+1, (N+1)*nx+ N*nu + (N+1)+ (2*K_NEAR) +nx);
 
@@ -657,26 +672,28 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     Matrix<double,nu,1> u_k_ref;
     Matrix<double,nx,nx> Ad;
     Matrix<double,nx,nu> Bd;
-    Matrix<double,nx,1> x0, hd;
+    Matrix<double,nx,1> x0, hd; // x0 is current x
     border_lines_.clear();
 
-    if (use_dyn_)  x0 <<car_pos_.x(), car_pos_.y(), yaw_, vel_, yawdot_, slip_angle_;
-    else{ x0 <<car_pos_.x(), car_pos_.y(), yaw_, vel_, 0.0, 0.0; }
+    if (use_dyn_) { // dynamic model
+        x0 <<car_pos_.x(), car_pos_.y(), yaw_, vel_, yawdot_, slip_angle_;
+    } else { // kinematic model, do not need yawdot_, slip_angle_
+        x0 <<car_pos_.x(), car_pos_.y(), yaw_, vel_, 0.0, 0.0;
+    }
     /** make sure there are no discontinuities in yaw**/
     // first check terminal safe_set
-    for (int i=0; i<terminal_CSS.size(); i++){
-        wrap_angle(terminal_CSS[i].x(2), x0(2));
+    for (Sample & cur_safety_set_point : terminal_CSS) {
+        wrap_angle(cur_safety_set_point.x(2), x0(2));
     }
     // also check for previous QPSolution
-    for (int i=0; i<N+1; i++){
+    for (int i = 0; i < N+1; i++) {
         wrap_angle(QPSolution_(i*nx+2), x0(2));
     }
 
-    for (int i=0; i<N+1; i++){        //0 to N
-
+    for (int i = 0; i < N+1; i++) {        //0 to N
         x_k_ref = QPSolution_.segment<nx>(i*nx);
         u_k_ref = QPSolution_.segment<nu>((N+1)*nx + i*nu);
-        double s_ref = track_->findTheta(x_k_ref(0), x_k_ref(1));
+        double s_k_ref = track_->findTheta(x_k_ref(0), x_k_ref(1));
         get_linearized_dynamics(Ad, Bd, hd, x_k_ref, u_k_ref, use_dyn_);
         /* form Hessian entries*/
         // cost does not depend on x0, only 1 to N
@@ -712,8 +729,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
             constraintMatrix.insert(i*nx+row, i*nx+row) = -1.0;
         }
 
-        double dx_dtheta = track_->x_eval_d(s_ref);
-        double dy_dtheta = track_->y_eval_d(s_ref);
+        double dx_dtheta = track_->x_eval_d(s_k_ref);
+        double dy_dtheta = track_->y_eval_d(s_k_ref);
 
         constraintMatrix.insert((N+1)*nx+ 2*i, i*nx) = -dy_dtheta;      // a*x
         constraintMatrix.insert((N+1)*nx+ 2*i, i*nx+1) = dx_dtheta;     // b*y
@@ -728,9 +745,9 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         Vector2d right_line_p1, right_line_p2, left_line_p1, left_line_p2;
         geometry_msgs::Point r_p1, r_p2, l_p1, l_p2;
 
-        center_p << track_->x_eval(s_ref), track_->y_eval(s_ref);
-        right_tangent_p = center_p + track_->getRightHalfWidth(s_ref) * Vector2d(dy_dtheta, -dx_dtheta).normalized();
-        left_tangent_p  = center_p + track_->getLeftHalfWidth(s_ref) * Vector2d(-dy_dtheta, dx_dtheta).normalized();
+        center_p << track_->x_eval(s_k_ref), track_->y_eval(s_k_ref);
+        right_tangent_p = center_p + track_->getRightHalfWidth(s_k_ref) * Vector2d(dy_dtheta, -dx_dtheta).normalized();
+        left_tangent_p  = center_p + track_->getLeftHalfWidth(s_k_ref) * Vector2d(-dy_dtheta, dx_dtheta).normalized();
 
         right_line_p1 = right_tangent_p + 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized();
         right_line_p2 = right_tangent_p - 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized();

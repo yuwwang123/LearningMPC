@@ -62,7 +62,7 @@ Record_SS::Record_SS(ros::NodeHandle &nh) : nh_(nh) {
     }
     float x = odom_msg.pose.pose.position.x;
     float y = odom_msg.pose.pose.position.y;
-    s_prev_ = track_->findTheta(x,y,0,true);
+    s_prev_ = track_->findTheta(x,y);
 
     ros_time_prev_ = ros::Time::now().toSec();
     time_=0; lap_=0;
@@ -88,7 +88,7 @@ void Record_SS::cmd_callback(const ackermann_msgs::AckermannDriveStampedConstPtr
         double yaw = tf::getYaw(odom_.pose.pose.orientation);
         float x = odom_.pose.pose.position.x;
         float y = odom_.pose.pose.position.y;
-        double s_curr = track_->findTheta(x,y,0,true);
+        double s_curr = track_->findTheta(x,y);
         double vel = odom_.twist.twist.linear.x;
 
         // check if is a new lap;
