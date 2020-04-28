@@ -94,8 +94,8 @@ private:
     int SAFETY_SET_ITERS;
 
     // MPC params
-    double q_s;
-    double r_accel; // elements in R matrix
+    double q_s; // elements in Q matrix used in defining state cost
+    double r_accel; // elements in R matrix used in defining control cost
     double r_steer; // elements in R matrix
     Matrix<double, nu, nu> R; //R matrix in objective function, coefficient of u: control inputs
 
@@ -133,7 +133,7 @@ private:
     void init_occupancy_grid();
     void init_SS_from_data(string data_file);
     void visualize_centerline();
-    int reset_QPSolution(int iter);
+    int initialize_QPSolution(int iter);
     void odom_callback(const nav_msgs::Odometry::ConstPtr &odom_msg);
     void add_point();
     void select_trajectory();
@@ -331,7 +331,7 @@ void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr & odom_msg) {
 void LMPC::run() {
     if (first_run_){
         // initialize QPSolution_ from initial Sample Safe Set (using the 2nd iteration)
-        reset_QPSolution(1);
+        initialize_QPSolution(1);
     }
 
     /******** LMPC MAIN LOOP starts ********/
@@ -343,7 +343,7 @@ void LMPC::run() {
         //sort(curr_trajectory_.begin(), curr_trajectory_.end(), compare_s);
         SS_.push_back(curr_trajectory_);
         curr_trajectory_.clear();
-     //   reset_QPSolution(iter_-1);
+     //   initialize_QPSolution(iter_-1);
         timestep_ = 0;
     }
 
@@ -389,11 +389,11 @@ void LMPC::visualize_centerline() {
     track_viz_pub_.publish(markers);
 }
 
-int LMPC::reset_QPSolution(int iter) {
-    QPSolution_ = VectorXd::Zero((N+1)*nx+ N*nu + nx*(N+1) + (SAFETY_SET_ITERS * K_NEAR + 1)); // size:(N+1)*nx+ N*nu + nx*(N+1) + (SAFETY_SET_ITERS * K_NEAR + 1)
+int LMPC::initialize_QPSolution(int iter) {
+     QPSolution_ = VectorXd::Zero((N+1)*nx+ N*nu + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + nx); // size = the # of decision variables
     // the extra 1 is itself?
     for (int i = 0; i < N+1; i++) {
-        QPSolution_.segment<nx>(i*nx) = SS_[iter][i].x; //starting from i*nx, last for nx length
+        QPSolution_.segment<nx>(i*nx) = SS_[iter][i].x; //starting from i*nx, last for nx length, assign with state x value
         if (i < N) {
             QPSolution_.segment<nu>((N+1)*nx + i*nu) = SS_[iter][i].u; // assign values to each nu
         }
@@ -656,14 +656,19 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     /** MPC variables: z = [x0, ..., xN, u0, ..., uN-1, s0, ..., sN, lambda0, ....., lambda(SAFETY_SET_ITERS * K_NEAR), s_t1, s_t2, s_t3, s_t4, s_t5, s_t6]*
      *  constraints: dynamics, track bounds, input limits, acceleration limit, slack, lambdas, terminal state, sum of lambda's*/
     // nx: terminal state soft constraint
-    //
-    SparseMatrix<double> HessianMatrix((N+1)*nx+ N*nu + (N+1) + (2*K_NEAR) +nx, (N+1)*nx+ N*nu + (N+1)+ (2*K_NEAR) +nx);
-    SparseMatrix<double> constraintMatrix((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + (2*K_NEAR) + 2*nx+1, (N+1)*nx+ N*nu + (N+1)+ (2*K_NEAR) +nx);
 
-    VectorXd gradient((N+1)*nx+ N*nu + (N+1) + (2*K_NEAR) +nx);
+    int number_of_decision_variables = (N+1)*nx+ N*nu + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + nx;
+    int number_of_constraints = (N+1)*nx + 2*(N+1) + N*nu + (N+1) + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + 2*nx + 1;
+    // HessianMatrix is a square positive definite matrix, dimension of it is the same as the # of decision variables
+    // x-x_ref((N+1)*nx)), u-u_ref(N*nu), slack variable(N+1), lambda(2*K_NEAR), terminal state (nx)
+    SparseMatrix<double> HessianMatrix(number_of_decision_variables, number_of_decision_variables);
+    // column of constraintMatrix has to match the # of decision variables, constraintMatrix*x <= b
+    SparseMatrix<double> constraintMatrix(number_of_constraints, number_of_decision_variables);
 
-    VectorXd lower((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + (2*K_NEAR) + 2*nx+1);
-    VectorXd upper((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + (2*K_NEAR) + 2*nx+1);
+    VectorXd gradient(number_of_decision_variables);
+
+    VectorXd lower(number_of_constraints);
+    VectorXd upper(number_of_constraints);
 
     gradient.setZero();
     lower.setZero(); upper.setZero();
@@ -689,9 +694,10 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     for (int i = 0; i < N+1; i++) {
         wrap_angle(QPSolution_(i*nx+2), x0(2));
     }
-
+    //  QPSolution_ size:             (N+1)*nx+ N*nu + nx*(N+1) + (SAFETY_SET_ITERS * K_NEAR + 1)
+    // number_of_decision_variables = (N+1)*nx+ N*nu + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + nx;
     for (int i = 0; i < N+1; i++) {        //0 to N
-        x_k_ref = QPSolution_.segment<nx>(i*nx);
+        x_k_ref = QPSolution_.segment<nx>(i*nx); //x in previous iter
         u_k_ref = QPSolution_.segment<nu>((N+1)*nx + i*nu);
         double s_k_ref = track_->findTheta(x_k_ref(0), x_k_ref(1));
         get_linearized_dynamics(Ad, Bd, hd, x_k_ref, u_k_ref, use_dyn_);
@@ -700,8 +706,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         if (i>0) {
             HessianMatrix.insert((N+1)*nx + N*nu + i, (N+1)*nx + N*nu + i) = q_s;
         }
-        if (i<N){
-            for (int row=0; row<nu; row++){
+        if (i<N){ // cost of control input u
+            for (int row = 0; row < nu; row++) {
                 HessianMatrix.insert((N+1)*nx + i*nu + row, (N+1)*nx + i*nu + row) = R(row, row);
             }
         }
@@ -709,8 +715,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         /* form constraint matrix */
         if (i<N){
             // Ad
-            for (int row=0; row<nx; row++){
-                for(int col=0; col<nx; col++){
+            for (int row = 0; row < nx; row++) {
+                for(int col = 0; col < nx; col++) {
                     constraintMatrix.insert((i+1)*nx+row, i*nx+col) = Ad(row,col);
                 }
             }
@@ -761,7 +767,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         l_p2.x = left_line_p2(0);   l_p2.y = left_line_p2(1);
         border_lines_.push_back(r_p1);  border_lines_.push_back(r_p2);
         border_lines_.push_back(l_p1); border_lines_.push_back(l_p2);
-
+        // BOUNDARY 常数斜率
         double C1 =  - dy_dtheta*right_tangent_p(0) + dx_dtheta*right_tangent_p(1);
         double C2 = - dy_dtheta*left_tangent_p(0) + dx_dtheta*left_tangent_p(1);
 
@@ -845,7 +851,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     // gradient
     int lowest_cost1 = terminal_CSS[K_NEAR-1].cost;
     int lowest_cost2 = terminal_CSS[2*K_NEAR-1].cost;
-    for (int i=0; i<K_NEAR; i++){
+    for (int i = 0; i < K_NEAR; i++) {
         gradient((N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].cost-lowest_cost1;
     }
     for (int i=K_NEAR; i<2*K_NEAR; i++){
