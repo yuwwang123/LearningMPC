@@ -660,7 +660,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     int number_of_decision_variables = (N+1)*nx+ N*nu + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + nx;
     int number_of_constraints = (N+1)*nx + 2*(N+1) + N*nu + (N+1) + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + 2*nx + 1;
     // HessianMatrix is a square positive definite matrix, dimension of it is the same as the # of decision variables
-    // x-x_ref((N+1)*nx)), u-u_ref(N*nu), slack variable(N+1), lambda(2*K_NEAR), terminal state (nx)
+    // x-x_ref((N+1)*nx)), u-u_ref(N*nu), slack variable(N+1), lambda(SAFETY_SET_ITERS*K_NEAR), terminal state (nx)
     SparseMatrix<double> HessianMatrix(number_of_decision_variables, number_of_decision_variables);
     // column of constraintMatrix has to match the # of decision variables, constraintMatrix*x <= b
     SparseMatrix<double> constraintMatrix(number_of_constraints, number_of_decision_variables);
@@ -694,7 +694,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     for (int i = 0; i < N+1; i++) {
         wrap_angle(QPSolution_(i*nx+2), x0(2));
     }
-    //  QPSolution_ size:             (N+1)*nx+ N*nu + nx*(N+1) + (SAFETY_SET_ITERS * K_NEAR + 1)
+
     // number_of_decision_variables = (N+1)*nx+ N*nu + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + nx;
     for (int i = 0; i < N+1; i++) {        //0 to N
         x_k_ref = QPSolution_.segment<nx>(i*nx); //x in previous iter
@@ -703,9 +703,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         get_linearized_dynamics(Ad, Bd, hd, x_k_ref, u_k_ref, use_dyn_);
         /* form Hessian entries*/
         // cost does not depend on x0, only 1 to N
-        if (i>0) {
-            HessianMatrix.insert((N+1)*nx + N*nu + i, (N+1)*nx + N*nu + i) = q_s;
-        }
+        HessianMatrix.insert((N+1)*nx + N*nu + i, (N+1)*nx + N*nu + i) = q_s;
+
         if (i<N){ // cost of control input u
             for (int row = 0; row < nu; row++) {
                 HessianMatrix.insert((N+1)*nx + i*nu + row, (N+1)*nx + i*nu + row) = R(row, row);
@@ -713,7 +712,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         }
 
         /* form constraint matrix */
-        if (i<N){
+        if (i<N){ // N dynamics constraints
             // Ad
             for (int row = 0; row < nx; row++) {
                 for(int col = 0; col < nx; col++) {
@@ -726,8 +725,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
                     constraintMatrix.insert((i+1)*nx+row, (N+1)*nx+ i*nu+col) = Bd(row,col);
                 }
             }
-            lower.segment<nx>((i+1)*nx) = -hd;//-OsqpEigen::INFTY,-OsqpEigen::INFTY,-OsqpEigen::INFTY,-OsqpEigen::INFTY;//-hd;
-            upper.segment<nx>((i+1)*nx) = -hd; //OsqpEigen::INFTY, OsqpEigen::INFTY,OsqpEigen::INFTY,OsqpEigen::INFTY;//-hd;
+            lower.segment<nx>((i+1)*nx) = -hd;// constant term from dynamics
+            upper.segment<nx>((i+1)*nx) = -hd;
         }
 
         // -I for each x_k+1
@@ -735,8 +734,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
             constraintMatrix.insert(i*nx+row, i*nx+row) = -1.0;
         }
 
-        double dx_dtheta = track_->x_eval_d(s_k_ref);
-        double dy_dtheta = track_->y_eval_d(s_k_ref);
+        double dx_dtheta = track_->x_eval_d(s_k_ref); //gradient, slope of x wrt s
+        double dy_dtheta = track_->y_eval_d(s_k_ref); //gradient, slope of y wrt s
 
         constraintMatrix.insert((N+1)*nx+ 2*i, i*nx) = -dy_dtheta;      // a*x
         constraintMatrix.insert((N+1)*nx+ 2*i, i*nx+1) = dx_dtheta;     // b*y
@@ -755,19 +754,21 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         right_tangent_p = center_p + track_->getRightHalfWidth(s_k_ref) * Vector2d(dy_dtheta, -dx_dtheta).normalized();
         left_tangent_p  = center_p + track_->getLeftHalfWidth(s_k_ref) * Vector2d(-dy_dtheta, dx_dtheta).normalized();
 
-        right_line_p1 = right_tangent_p + 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized();
+        // For visualizing track boundaries
+        right_line_p1 = right_tangent_p + 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized(); // expand around the point for 0.3m
         right_line_p2 = right_tangent_p - 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized();
         left_line_p1 = left_tangent_p + 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized();
         left_line_p2 = left_tangent_p - 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized();
 
-        // For visualizing track boundaries
         r_p1.x = right_line_p1(0);  r_p1.y = right_line_p1(1);
         r_p2.x = right_line_p2(0);  r_p2.y = right_line_p2(1);
         l_p1.x = left_line_p1(0);   l_p1.y = left_line_p1(1);
         l_p2.x = left_line_p2(0);   l_p2.y = left_line_p2(1);
         border_lines_.push_back(r_p1);  border_lines_.push_back(r_p2);
         border_lines_.push_back(l_p1); border_lines_.push_back(l_p2);
-        // BOUNDARY 常数斜率
+        // END of visualiing track boundaries
+
+        // BOUNDARY interception for right tangent line, and left tangent line
         double C1 =  - dy_dtheta*right_tangent_p(0) + dx_dtheta*right_tangent_p(1);
         double C2 = - dy_dtheta*left_tangent_p(0) + dx_dtheta*left_tangent_p(1);
 
@@ -778,8 +779,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         upper((N+1)*nx+ 2*i+1) = max(C1, C2);
 
         // u_min < u < u_max
-        if (i<N){
-            for (int row=0; row<nu; row++){
+        if (i < N) {
+            for (int row = 0; row < nu; row++) {
                 constraintMatrix.insert((N+1)*nx+ 2*(N+1) +i*nu+row, (N+1)*nx+i*nu+row) = 1.0;
             }
             // input bounds: speed and steer
@@ -792,7 +793,7 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         lower((N+1)*nx+ 2*(N+1) + N*nu +i) = 0;
         upper((N+1)*nx+ 2*(N+1) + N*nu +i) = SPEED_MAX;
 
-        // s_k >= 0
+        // slack variables_k >= 0
         constraintMatrix.insert((N+1)*nx + 2*(N+1) + N*nu + (N+1) + i, (N+1)*nx+N*nu +i) = 1.0;
         lower((N+1)*nx + 2*(N+1) + N*nu  + (N+1) + i) = 0;
         upper((N+1)*nx + 2*(N+1) + N*nu  + (N+1) + i) = OsqpEigen::INFTY;
@@ -800,87 +801,78 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     }
     int numOfConstraintsSoFar = (N+1)*nx + 2*(N+1) + N*nu + (N+1) + (N+1);
 
-    // lamda's >= 0
-    for (int i=0; i<2*K_NEAR; i++){
+    // labmda's >= 0
+    for (int i = 0; i < SAFETY_SET_ITERS*K_NEAR; i++) {
         constraintMatrix.insert(numOfConstraintsSoFar + i, (N+1)*nx+ N*nu + (N+1) + i) = 1.0;
         lower(numOfConstraintsSoFar + i) = 0;
         upper(numOfConstraintsSoFar + i) = OsqpEigen::INFTY;
     }
-    numOfConstraintsSoFar += 2*K_NEAR;
+    numOfConstraintsSoFar += SAFETY_SET_ITERS*K_NEAR;
 
-    // terminal state constraints:  -s_terminal <= -x_N+1 + linear_combination(lambda's) <= s_terminal
+    // terminal state constraints, relaxed:  -s_terminal <= -x_N+1 + linear_combination(lambda's) <= s_terminal
     // 0 <= s_terminal -x_N+1 + linear_combination(lambda's) <= inf
-    for (int i=0; i<2*K_NEAR; i++){
-        for (int state_ind=0; state_ind<nx; state_ind++){
+    for (int i = 0; i < SAFETY_SET_ITERS*K_NEAR; i++) {
+        for (int state_ind = 0; state_ind < nx; state_ind++) {
             constraintMatrix.insert(numOfConstraintsSoFar + state_ind, (N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].x(state_ind);
         }
     }
-    for (int state_ind=0; state_ind<nx; state_ind++){
+    for (int state_ind=0; state_ind<nx; state_ind++) {
         constraintMatrix.insert(numOfConstraintsSoFar + state_ind, N*nx + state_ind) = -1;
-        constraintMatrix.insert(numOfConstraintsSoFar+state_ind, (N+1)*nx+ N*nu + (N+1) + 2*K_NEAR + state_ind) = 1;
+        constraintMatrix.insert(numOfConstraintsSoFar+state_ind, (N+1)*nx+ N*nu + (N+1) + SAFETY_SET_ITERS*K_NEAR + state_ind) = 1;
         lower(numOfConstraintsSoFar+state_ind) = 0;
         upper(numOfConstraintsSoFar+state_ind) = OsqpEigen::INFTY;
     }
     numOfConstraintsSoFar += nx;
 
     //-inf <= -x_N+1 + linear_combination(lambda's) - s_terminal <= 0
-    for (int i=0; i<2*K_NEAR; i++){
-        for (int state_ind=0; state_ind<nx; state_ind++){
+    for (int i = 0; i < SAFETY_SET_ITERS*K_NEAR; i++) {
+        for (int state_ind = 0; state_ind < nx; state_ind++) {
             constraintMatrix.insert(numOfConstraintsSoFar + state_ind, (N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].x(state_ind);
         }
     }
-    for (int state_ind=0; state_ind<nx; state_ind++){
+    for (int state_ind = 0; state_ind < nx; state_ind++) {
         constraintMatrix.insert(numOfConstraintsSoFar + state_ind, N*nx + state_ind) = -1;
-        constraintMatrix.insert(numOfConstraintsSoFar+state_ind, (N+1)*nx+ N*nu + (N+1) + 2*K_NEAR + state_ind) = -1;
+        constraintMatrix.insert(numOfConstraintsSoFar+state_ind, (N+1)*nx+ N*nu + (N+1) + SAFETY_SET_ITERS*K_NEAR + state_ind) = -1;
         lower(numOfConstraintsSoFar+state_ind) = -OsqpEigen::INFTY;
         upper(numOfConstraintsSoFar+state_ind) = 0;
     }
 
     numOfConstraintsSoFar += nx;
-   // cout<<"con dim: "<< (N+1)*nx+ 2*(N+1)*nx + N*nu + (N-1) + (N+1)*nx + (2*K_NEAR) + nx+1 <<endl;
+   // cout<<"con dim: "<< (N+1)*nx+ 2*(N+1)*nx + N*nu + (N-1) + (N+1)*nx + (SAFETY_SET_ITERS*K_NEAR) + nx+1 <<endl;
     // sum of lamda's = 1;
-    for (int i=0; i<2*K_NEAR; i++){
+    for (int i=0; i<SAFETY_SET_ITERS*K_NEAR; i++){
         constraintMatrix.insert(numOfConstraintsSoFar, (N+1)*nx+ N*nu + (N+1) + i) = 1;
     }
 
     lower(numOfConstraintsSoFar) = 1.0;
     upper(numOfConstraintsSoFar) = 1.0;
     numOfConstraintsSoFar++;
-    if (numOfConstraintsSoFar != (N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + (2*K_NEAR) + 2*nx+1) throw;  // for debug
+    if (numOfConstraintsSoFar != (N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + 2*nx+1) throw;  // for debug
 
-    // gradient
-    int lowest_cost1 = terminal_CSS[K_NEAR-1].cost;
-    int lowest_cost2 = terminal_CSS[2*K_NEAR-1].cost;
-    for (int i = 0; i < K_NEAR; i++) {
-        gradient((N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].cost-lowest_cost1;
-    }
-    for (int i=K_NEAR; i<2*K_NEAR; i++){
-        gradient((N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].cost-lowest_cost2;
+    // cost J
+    for (int i = 0; i < SAFETY_SET_ITERS*K_NEAR; i++) {
+        gradient((N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].cost;
     }
 
     //
-    for (int i=0; i<nx; i++){
-        HessianMatrix.insert((N+1)*nx+ N*nu + (N+1) + 2*K_NEAR + i, (N+1)*nx+ N*nu + (N+1) + 2*K_NEAR + i) = q_s;
+    for (int i = 0; i < nx; i++) {
+        HessianMatrix.insert((N+1)*nx+ N*nu + (N+1) + SAFETY_SET_ITERS*K_NEAR + i, (N+1)*nx+ N*nu + (N+1) + SAFETY_SET_ITERS*K_NEAR + i) = q_s;
     }
-//    for (int i=0; i<2*K_NEAR; i++){
-//        gradient((N+1)*nx+ N*nu + (N+1) + i) = terminal_CSS[i].cost;
-//    }
 
-    //cout<<"gradient: "<<gradient<<endl;
     //x0 constraint
     lower.head(nx) = -x0;
     upper.head(nx) = -x0;
 
 
     SparseMatrix<double> H_t = HessianMatrix.transpose();
-    SparseMatrix<double> sparse_I((N+1)*nx+ N*nu + (N+1)+ (2*K_NEAR) +nx, (N+1)*nx+ N*nu + (N+1)+ (2*K_NEAR) +nx);
+    SparseMatrix<double> sparse_I((N+1)*nx+ N*nu + (N+1)+ (SAFETY_SET_ITERS*K_NEAR) +nx, (N+1)*nx+ N*nu + (N+1)+ (SAFETY_SET_ITERS*K_NEAR) +nx);
     sparse_I.setIdentity();
     HessianMatrix = 0.5*(HessianMatrix + H_t) + 0.0000001*sparse_I;
 
     OsqpEigen::Solver solver;
     solver.settings()->setWarmStart(true);
-    solver.data()->setNumberOfVariables((N+1)*nx+ N*nu + (N+1)+ 2*K_NEAR +nx);
-    solver.data()->setNumberOfConstraints((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + 2*K_NEAR + 2*nx+1);
+    solver.data()->setNumberOfVariables((N+1)*nx+ N*nu + (N+1)+ SAFETY_SET_ITERS*K_NEAR +nx);
+    solver.data()->setNumberOfConstraints((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + SAFETY_SET_ITERS*K_NEAR + 2*nx+1);
 
     if (!solver.data()->setHessianMatrix(HessianMatrix)) throw "fail set Hessian";
     if (!solver.data()->setGradient(gradient)){throw "fail to set gradient";}

@@ -131,19 +131,20 @@ public:
         initialize_width();
     }
 
-    void initialize_width(){
+    void initialize_width() {
         using namespace Eigen;
-        int t=0;
+
         Vector2d p_right, p_left;
-        for (Point_ref & point: centerline_points){
+        for (Point_ref & point: centerline_points) {
             double dx_dtheta = x_eval_d(point.theta);
             double dy_dtheta = y_eval_d(point.theta);
-            Vector2d p(point.x, point.y);
+            Vector2d cur_point(point.x, point.y);
 
+            int t = 0;
             //search right until hit right track boundary
             while(true){
-                float x = (p + (float)t * map.info.resolution * Vector2d(dy_dtheta, -dx_dtheta).normalized())(0);
-                float y = (p + (float)t * map.info.resolution * Vector2d(dy_dtheta, -dx_dtheta).normalized())(1);
+                float x = (cur_point + (float)t * map.info.resolution * Vector2d(dy_dtheta, -dx_dtheta).normalized())(0);
+                float y = (cur_point + (float)t * map.info.resolution * Vector2d(dy_dtheta, -dx_dtheta).normalized())(1);
                 if(occupancy_grid::is_xy_occupied(map, x, y)){
                     p_right(0) = x;
                     p_right(1) = y;
@@ -154,8 +155,8 @@ public:
             t=0;
             //search left until hit right track boundary
             while(true){
-                float x = (p + (float)t * map.info.resolution * Vector2d(-dy_dtheta, dx_dtheta).normalized())(0);
-                float y = (p + (float)t * map.info.resolution * Vector2d(-dy_dtheta, dx_dtheta).normalized())(1);
+                float x = (cur_point + (float)t * map.info.resolution * Vector2d(-dy_dtheta, dx_dtheta).normalized())(0);
+                float y = (cur_point + (float)t * map.info.resolution * Vector2d(-dy_dtheta, dx_dtheta).normalized())(1);
                 if(occupancy_grid::is_xy_occupied(map, x, y)){
                     p_left(0) = x;
                     p_left(1) = y;
@@ -163,8 +164,8 @@ public:
                 }
                 t++;
             }
-            point.left_half_width = (p_left-p).norm();
-            point.right_half_width = (p_right-p).norm();
+            point.left_half_width = (p_left-cur_point).norm();
+            point.right_half_width = (p_right-cur_point).norm();
         }
     }
 
@@ -252,6 +253,7 @@ public:
     double getRightHalfWidth(const double & theta) {
         // wrapTheta(theta);
         int ind = static_cast<int>(floor(theta/space));
+        // clamp ind between 0 to centerline size to prevent segmentation fault
         ind = max(0, min(int(centerline_points.size()-1), ind));
         return centerline_points.at(ind).right_half_width;
     }
