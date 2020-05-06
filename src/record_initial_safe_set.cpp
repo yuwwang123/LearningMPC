@@ -1,6 +1,4 @@
-//
-// Created by yuwei on 4/2/20.
-//
+
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
 #include <ackermann_msgs/AckermannDriveStamped.h>

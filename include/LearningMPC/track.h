@@ -1,6 +1,3 @@
-//
-// Created by yuwei on 11/20/19.
-//
 
 #include <ros/ros.h>
 #include <ros/package.h>
@@ -51,7 +48,7 @@ public:
     nav_msgs::OccupancyGrid map;
     vector<double> width_info;
 
-    Track(string wp_file_name, nav_msgs::OccupancyGrid& map, bool sparse=false) : space(0.05), map(map){
+    Track(string wp_file_name, nav_msgs::OccupancyGrid& map, bool sparse=false) : space(0.05), map(map) {
         space = 0.05;
         centerline_points.clear();
         vector<geometry_msgs::Point> waypoints;

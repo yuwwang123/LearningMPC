@@ -1,3 +1,4 @@
+
 //ros library
 #include <ros/ros.h>
 #include <ros/package.h>
@@ -79,6 +80,8 @@ private:
     string drive_topic;
     string wp_file_name;
     string initial_safe_set_file_name;
+    string lap_time_data_file_name;
+    string x_y_velocity_data_file_name;
     double WAYPOINT_SPACE;
     double MAP_MARGIN;
 
@@ -94,7 +97,7 @@ private:
     int SAFETY_SET_ITERS;
 
     // MPC params
-    double q_s; // elements in Q matrix used in defining state cost
+    double q_s; // elements in Q matrix used in defining slack variable cost, will be high
     double r_accel; // elements in R matrix used in defining control cost
     double r_steer; // elements in R matrix
     Matrix<double, nu, nu> R; //R matrix in objective function, coefficient of u: control inputs
@@ -155,6 +158,11 @@ private:
     int find_nearest_point(vector<Sample>& trajectory, double s);
     void update_cost_to_go(vector<Sample>& trajectory);
     Matrix<double,nx,1> get_nonlinear_dynamics(Matrix<double,nx,1>& x, Matrix<double,nu,1>& u,  double t);
+
+    std::ofstream myfile;
+    void record_lap_time();
+    void record_xyvelo(double x, double y, float vel);
+
 };
 
 //constructor, run once only
@@ -198,6 +206,7 @@ LMPC::LMPC(ros::NodeHandle &nh): nh_(nh){
     use_dyn_ = false;
     init_SS_from_data(initial_safe_set_file_name);
 
+
 }
 
 // load parameters from Lmpc_params.yaml
@@ -206,6 +215,9 @@ void LMPC::getParameters(ros::NodeHandle &nh) {
     nh.getParam("drive_topic", drive_topic);
     nh.getParam("wp_file_name", wp_file_name);
     nh.getParam("initial_safe_set_file_name", initial_safe_set_file_name);
+    nh.getParam("lap_time_data_file_name", lap_time_data_file_name);
+    nh.getParam("x_y_velocity_data_file_name", x_y_velocity_data_file_name);
+
     nh.getParam("N",N);
     nh.getParam("Ts",Ts);
     nh.getParam("K_NEAR", K_NEAR);
@@ -322,16 +334,38 @@ void LMPC::odom_callback(const nav_msgs::Odometry::ConstPtr & odom_msg) {
 
     // adjust penalty on acceleration and steering according to the speed
     // when velocity gets high, more penalty on high acceleration and high steering angle
-    if (vel_ > 4.5) {
-        R(0,0) = 1.3 * r_accel;
-        R(1,1) = 1.8 * r_steer;
-    }
+//    if (vel_ > 4.5) {
+//        R(0,0) = 1.3 * r_accel;
+//        R(1,1) = 1.8 * r_steer;
+//    }
+    record_xyvelo(x, y, vel_);
+}
+
+// record x, y, velocity for data analysis
+void LMPC::record_xyvelo(double x, double y, float vel){
+    myfile.open ("/home/baihong/baihong_ws/src/LearningMPC/LMPC_xyvelo_data.csv", ios::out | ios::app);
+    myfile << iter_ << ", "
+           << x << ", "
+            << y << ", "
+            << vel <<  "\n";
+    myfile.close();
+
+}
+
+// record the definite ros time for further analysis on lap time
+void LMPC::record_lap_time() {
+    // record timestep, x, y, yaw, steering angle into 'LMPC_purepursuit_data'
+    myfile.open ("/home/baihong/baihong_ws/src/LearningMPC/LMPC_lap_time_data.csv", ios::out | ios::app);
+    myfile << iter_ << ", "
+           << ros::Time::now() << "\n";
+    myfile.close();
 }
 
 void LMPC::run() {
     if (first_run_){
         // initialize QPSolution_ from initial Sample Safe Set (using the 2nd iteration)
         initialize_QPSolution(1);
+        record_lap_time();
     }
 
     /******** LMPC MAIN LOOP starts ********/
@@ -345,6 +379,7 @@ void LMPC::run() {
         curr_trajectory_.clear();
      //   initialize_QPSolution(iter_-1);
         timestep_ = 0;
+        record_lap_time();
     }
 
     /*** select terminal state candidate and its convex safe set ***/
@@ -359,6 +394,7 @@ void LMPC::run() {
     timestep_++;
     first_run_ = false;
 }
+
 
 // visualize centerline as blue lines
 void LMPC::visualize_centerline() {
@@ -409,7 +445,7 @@ Matrix<double,nx,1> LMPC::select_terminal_candidate(){
     }
 }
 
-void LMPC::add_point(){
+void LMPC::add_point() {
     Sample point;
     point.x << car_pos_.x(), car_pos_.y(), yaw_, vel_, yawdot_, slip_angle_;
 
@@ -673,8 +709,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     gradient.setZero();
     lower.setZero(); upper.setZero();
 
-    Matrix<double,nx,1> x_k_ref;
-    Matrix<double,nu,1> u_k_ref;
+    Matrix<double,nx,1> x_k_1;
+    Matrix<double,nu,1> u_k_1;
     Matrix<double,nx,nx> Ad;
     Matrix<double,nx,nu> Bd;
     Matrix<double,nx,1> x0, hd; // x0 is current x
@@ -695,12 +731,11 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         wrap_angle(QPSolution_(i*nx+2), x0(2));
     }
 
-    // number_of_decision_variables = (N+1)*nx+ N*nu + (N+1) + (SAFETY_SET_ITERS*K_NEAR) + nx;
     for (int i = 0; i < N+1; i++) {        //0 to N
-        x_k_ref = QPSolution_.segment<nx>(i*nx); //x in previous iter
-        u_k_ref = QPSolution_.segment<nu>((N+1)*nx + i*nu);
-        double s_k_ref = track_->findTheta(x_k_ref(0), x_k_ref(1));
-        get_linearized_dynamics(Ad, Bd, hd, x_k_ref, u_k_ref, use_dyn_);
+        x_k_1 = QPSolution_.segment<nx>(i*nx); //x in previous iter
+        u_k_1 = QPSolution_.segment<nu>((N+1)*nx + i*nu);
+        double s_k_1 = track_->findTheta(x_k_1(0), x_k_1(1));
+        get_linearized_dynamics(Ad, Bd, hd, x_k_1, u_k_1, use_dyn_);
         /* form Hessian entries*/
         // cost does not depend on x0, only 1 to N
         HessianMatrix.insert((N+1)*nx + N*nu + i, (N+1)*nx + N*nu + i) = q_s;
@@ -734,8 +769,8 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
             constraintMatrix.insert(i*nx+row, i*nx+row) = -1.0;
         }
 
-        double dx_dtheta = track_->x_eval_d(s_k_ref); //gradient, slope of x wrt s
-        double dy_dtheta = track_->y_eval_d(s_k_ref); //gradient, slope of y wrt s
+        double dx_dtheta = track_->x_eval_d(s_k_1); //gradient, slope of x wrt s
+        double dy_dtheta = track_->y_eval_d(s_k_1); //gradient, slope of y wrt s
 
         constraintMatrix.insert((N+1)*nx+ 2*i, i*nx) = -dy_dtheta;      // a*x
         constraintMatrix.insert((N+1)*nx+ 2*i, i*nx+1) = dx_dtheta;     // b*y
@@ -750,9 +785,9 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
         Vector2d right_line_p1, right_line_p2, left_line_p1, left_line_p2;
         geometry_msgs::Point r_p1, r_p2, l_p1, l_p2;
 
-        center_p << track_->x_eval(s_k_ref), track_->y_eval(s_k_ref);
-        right_tangent_p = center_p + track_->getRightHalfWidth(s_k_ref) * Vector2d(dy_dtheta, -dx_dtheta).normalized();
-        left_tangent_p  = center_p + track_->getLeftHalfWidth(s_k_ref) * Vector2d(-dy_dtheta, dx_dtheta).normalized();
+        center_p << track_->x_eval(s_k_1), track_->y_eval(s_k_1);
+        right_tangent_p = center_p + track_->getRightHalfWidth(s_k_1) * Vector2d(dy_dtheta, -dx_dtheta).normalized();
+        left_tangent_p  = center_p + track_->getLeftHalfWidth(s_k_1) * Vector2d(-dy_dtheta, dx_dtheta).normalized();
 
         // For visualizing track boundaries
         right_line_p1 = right_tangent_p + 0.15*Vector2d(dx_dtheta, dy_dtheta).normalized(); // expand around the point for 0.3m
@@ -865,14 +900,14 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
 
 
     SparseMatrix<double> H_t = HessianMatrix.transpose();
-    SparseMatrix<double> sparse_I((N+1)*nx+ N*nu + (N+1)+ (SAFETY_SET_ITERS*K_NEAR) +nx, (N+1)*nx+ N*nu + (N+1)+ (SAFETY_SET_ITERS*K_NEAR) +nx);
+    SparseMatrix<double> sparse_I(number_of_decision_variables,  number_of_decision_variables);
     sparse_I.setIdentity();
     HessianMatrix = 0.5*(HessianMatrix + H_t) + 0.0000001*sparse_I;
 
     OsqpEigen::Solver solver;
     solver.settings()->setWarmStart(true);
-    solver.data()->setNumberOfVariables((N+1)*nx+ N*nu + (N+1)+ SAFETY_SET_ITERS*K_NEAR +nx);
-    solver.data()->setNumberOfConstraints((N+1)*nx+ 2*(N+1) + N*nu + (N+1) + (N+1) + SAFETY_SET_ITERS*K_NEAR + 2*nx+1);
+    solver.data()->setNumberOfVariables(number_of_decision_variables);
+    solver.data()->setNumberOfConstraints(number_of_constraints);
 
     if (!solver.data()->setHessianMatrix(HessianMatrix)) throw "fail set Hessian";
     if (!solver.data()->setGradient(gradient)){throw "fail to set gradient";}
@@ -880,7 +915,9 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     if (!solver.data()->setLowerBound(lower)){throw "fail to set lower bound";}
     if (!solver.data()->setUpperBound(upper)){throw "fail to set upper bound";}
 
-    if(!solver.initSolver()){ cout<< "fail to initialize solver"<<endl;}
+    if(!solver.initSolver()) {
+        cout<< "fail to initialize solver"<<endl;
+    }
 
     if(!solver.solve()) {
         return;
@@ -888,12 +925,13 @@ void LMPC::solve_MPC (const Matrix<double,nx,1>& terminal_candidate) {
     QPSolution_ = solver.getSolution();
     visualize_mpc_solution(terminal_CSS, terminal_candidate);
 
-//    cout<<"Solution: "<<endl;
-//    cout<<QPSolution_<<endl;
     solver.clearSolver();
 
-    if (use_dyn_) ROS_INFO("using dynamics");
-    else ROS_INFO("using kinematics");
+    if (use_dyn_) {
+        ROS_INFO("using dynamics");
+    } else {
+        ROS_INFO("using kinematics");
+    }
 }
 
 void LMPC::applyControl() {
@@ -964,7 +1002,7 @@ void LMPC::visualize_mpc_solution(const vector<Sample>& convex_safe_set, const M
     css_dots.color.b = 1.0;
     css_dots.color.a = 1.0;
     VectorXd costs = VectorXd(convex_safe_set.size());
-    for (int i=0; i<convex_safe_set.size(); i++){
+    for (int i = 0; i < convex_safe_set.size(); i++) {
         geometry_msgs::Point p;
         p.x = convex_safe_set[i].x(0);
         p.y = convex_safe_set[i].x(1);
@@ -993,12 +1031,12 @@ void LMPC::visualize_mpc_solution(const vector<Sample>& convex_safe_set, const M
     LMPC_viz_pub_.publish(markers);
 }
 
-int main(int argc, char **argv){
+int main(int argc, char **argv) {
     ros::init(argc, argv, "LMPC");
     ros::NodeHandle nh;
     LMPC lmpc(nh);
     ros::Rate rate(20);
-    while(ros::ok()){
+    while(ros::ok()) {
         ros::spinOnce();
         lmpc.run();
         rate.sleep();

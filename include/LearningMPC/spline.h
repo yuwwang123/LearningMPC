@@ -1,7 +1,3 @@
-//
-// Created by yuwei on 11/19/19.
-//
-
 #ifndef SRC_SPLINE_H
 #define SRC_SPLINE_H
 

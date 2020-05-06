@@ -1,6 +1,3 @@
-//
-// Author: Yuwei Wang
-
 
 #include <nav_msgs/OccupancyGrid.h>
 #include <visualization_msgs/Marker.h>
