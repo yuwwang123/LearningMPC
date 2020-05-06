@@ -2,31 +2,36 @@ pose_topic : "odom"
 drive_topic: "nav"
 wp_file_name: "/home/baihong/baihong_ws/src/LearningMPC/data/centerline_waypoints.csv"
 initial_safe_set_file_name: "/home/baihong/baihong_ws/src/LearningMPC/data/initial_safe_set.csv"
+lap_time_data_file_name: "/home/baihong/baihong_ws/src/LearningMPC/LMPC_lap_time_data.csv"
+x_y_velocity_data_file_name: "/home/baihong/baihong_ws/src/LearningMPC/LMPC_xyvelo_data.csv"
 WAYPOINT_SPACE: 0.2
-MAP_MARGIN: 0.32
+MAP_MARGIN: 0.32 # map inflation
 
 N: 20
 Ts: 0.05
 K_NEAR: 14
-SPEED_MAX: 10.00
-STEER_MAX: 0.41
-ACCELERATION_MAX: 4.0
-DECELERATION_MAX: 5.0
+SPEED_MAX: 7.00
+STEER_MAX: 0.4189
+ACCELERATION_MAX: 7.51
+DECELERATION_MAX: 8.26
 VEL_THRESHOLD: 1.3
+INITIAL_ITER: 2
+SAFETY_SET_ITERS: 2 # iterations to be considered as safety set
 
 # MPC params
-r_accel : 1.5
-r_steer: 12.0
-q_s : 2000.0
+r_accel : 0.1 #1.5, penalty for acceleration
+r_steer: 12.0 # penalty for steering angle
+q_s : 2000.0 #penalty for slack variables
 
-#car parameters used in struct car_params.h
+#car parameters used in struct car_params.h, should be the same as the values shown in "racecar_simulator/params.yaml"
 wheelbase: 0.3302 # meters
-friction_coeff: 1.0 # - (complete estimate)
-height_cg: 0.08255 # m (roughly measured to be 3.25 in)
+friction_coeff: 0.523 # - (complete estimate)
+height_cg: 0.074 # m (roughly measured to be 3.25 in)
 l_cg2rear: 0.17145 # m (decently measured to be 6.75 in)
 l_cg2front: 0.15875 # m (decently measured to be 6.25 in)
-C_S_front: 2.3 #.79 # 1/rad ? (estimated weight/4)
-C_S_rear: 2.3 #.79 # 1/rad ? (estimated weight/4)
-mass: 3.17 # kg (measured on car 'lidart')
-moment_inertia: .0398378 # kg m^2 (estimated as a rectangle with width and height of car and evenly distributed mass, then shifted to account for center of mass location)
-random: 1.0
+
+C_S_front: 4.718 #.79 # 1/rad ? (estimated weight/4)
+C_S_rear: 5.4562 #.79 # 1/rad ? (estimated weight/4)
+mass: 3.47 # kg (measured on car 'lidart')
+moment_inertia: .04712 # kg m^2 (estimated as a rectangle with width and height of car and evenly distributed mass, then shifted to account for center of mass location)
+
