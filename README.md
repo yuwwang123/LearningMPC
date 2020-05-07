@@ -24,4 +24,25 @@ With low frictions, it converges to a policy with lower top speed but with more 
 
 ![](media/drifting_low_friction.gif).
 
+Quick Start:
+
+install racecar_simulator from:
+https://github.com/mlab-upenn/f110-fall2019-skeletons
+
+The original simulator only accepts velocity as control input. We need to make it accept acceleration as control input:
+Replace the origin 'simulator.cpp' in path/racecar_simulator/node with the 'simulator.cpp' provided in this repo.
+
+Replace the track map:
+put .yaml and .png in /map into the /maps in simulator.
+change the map to be launched in /launch in simulator.
+
+Launch simulator:
+>roslaunch racecar_simulator simulator.launch
+
+Repose the car at the start point
+
+Launch the algorithm:
+>roslaunch LearningMPC lmpc.launch
+
+
 
