@@ -39,7 +39,7 @@ change the map to be launched in `/launch` in simulator.
 ### Launch simulator:
 >roslaunch racecar_simulator simulator.launch
 
-### Repose the car at the start point
+### Repose the car around the start line / finishing line
 
 ### Launch the algorithm:
 >roslaunch LearningMPC lmpc.launch
