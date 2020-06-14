@@ -32,7 +32,7 @@ First launch the simulator by entering the command below in terminal:
     
 Position the car as shown below (The car must be placed ahead of the starting line) using interactive markers in Rviz 
 
-![](media/starting_config.png = 200x200)
+![](media/starting_config.png | width=200)
 
 Then launch LearningMPC node:
 
