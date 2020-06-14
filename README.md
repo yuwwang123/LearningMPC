@@ -43,9 +43,8 @@ Enter ```n``` in the simulator terminal to unlock the car
 
 
 ### Results
-![](media/laps_compare.PNG)
 
-
+<img src="media/laps_compare.PNG" width="60%">
 
 Lap 5 (Top speed 1.2 m/s)
 
@@ -73,11 +72,13 @@ Obstacle Avoidance 2 (low friction):
 
 Lap time vs number of iterations completed:
 
-![](media/lap_time_decrease.PNG)
+<img src="media/lap_time_decrease.PNG" width="50%">
+
 
 Converged optimal policy recorded:
 
-![](media/final_traj.PNG)
+<img src="media/final_traj.PNG" width="50%">
+
 
 
 Currently working on Gaussian Process and local linear regression for system identification to update the dynamic model online.
