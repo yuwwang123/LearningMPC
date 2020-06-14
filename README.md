@@ -38,6 +38,8 @@ Position the car approximately in the starting position as shown below using the
 Then launch LearningMPC node:
 
     roslaunch LearningMPC lmpc.launch
+    
+Add the "LMPC" topic in the Rviz display panel to visualize predicted trajectories by LearningMPC
 
 Enter ```n``` in the simulator terminal to unlock the car
 
