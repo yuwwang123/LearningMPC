@@ -30,7 +30,7 @@ First launch the simulator by entering the command below in terminal:
 
     roslaunch racecar_simulator simulator.launch
     
-Position the car as shown below (The car must be placed ahead of the starting line) using interactive markers in Rviz 
+Position the car approximately in the starting position as shown below using the interactive marker in Rviz (The car must be placed ahead of the starting line)
 
 <img src="media/starting_config.png" width="40%">
 
