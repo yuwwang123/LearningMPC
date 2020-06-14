@@ -2,7 +2,7 @@ pose_topic : "odom"
 drive_topic: "nav"
 wp_file_name: "/home/yuwei/yuwei_ws/src/LearningMPC/data/centerline_waypoints.csv"
 
-r_accel : 1.5
+r_accel : 1.2
 r_steer: 18.0
 q_s: 3000.0
 q_s_terminal: 800
