@@ -26,7 +26,9 @@ The improvement of racing performance over laps is shown here below. The black o
 ### How to Run
 Build everything with ```catkin_make```  from the root directory of your catkin workspace
 
-First launch the simulator by entering the command below in terminal:
+Since the simulator uses a different map as default, you will need to add the track map used in this project to the map folder inside the simulator package. Copy ```levinelobby_track.png``` and ```levinelobby_track.yaml``` to ```racecar_simulator\map```, and modify the path in simulator.launch to ```levinelobby_track.yaml```
+
+Then launch the simulator by entering the command below in terminal:
 
     roslaunch racecar_simulator simulator.launch
     
