@@ -48,8 +48,6 @@ Enter ```n``` in the simulator terminal to unlock the car
 
 ### Results
 
-<img src="media/laps_compare.PNG" width="60%">
-
 Lap 5 (Top speed 1.2 m/s)
 
 ![](media/lap5.gif)
