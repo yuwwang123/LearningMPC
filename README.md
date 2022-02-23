@@ -45,6 +45,10 @@ Add the "LMPC" topic in the Rviz display panel to visualize predicted trajectori
 
 Enter ```n``` in the simulator terminal to unlock the car
 
+### Note on how to load this map
+The map data which consists of an image file and a yaml file with meta info resides in the /data folder. Place the two files under the /map folder in the [F1/10 racecar simulator package](https://github.com/mlab-upenn/f110-fall2019-skeletons/tree/master/racecar_simulator/maps). Finally, modify [this line](https://github.com/mlab-upenn/f110-fall2019-skeletons/blob/master/racecar_simulator/launch/simulator.launch#L7) in the launch file to point to the yaml file (levinelobby_track.yaml in this case) before you launch the simulator. 
+
+
 
 ### Results
 
